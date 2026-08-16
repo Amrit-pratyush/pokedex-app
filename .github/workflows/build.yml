@@ -16,7 +16,7 @@ jobs:
           node-version: 20
 
       - name: Setup Java
-        uses: actions/setup-java@v5
+        uses: actions/setup-java@v4
         with:
           distribution: 'zulu'
           java-version: '17'
@@ -24,18 +24,18 @@ jobs:
       - name: Setup Android SDK
         uses: android-actions/setup-android@v3
 
-      - name: Install Project Dependencies
+      - name: Install Dependencies
         run: npm install --legacy-peer-deps
 
-      - name: Generate Native Android Project
+      - name: Generate Android Native Files
         run: npx expo prebuild --platform android --clean
 
-      - name: Build Standalone APK
+      - name: Build Android APK
         working-directory: android
-        run: ./gradlew assembleRelease
+        run: ./gradlew assembleDebug
 
       - name: Upload Downloadable APK
         uses: actions/upload-artifact@v4
         with:
           name: Pokedex-App-APK
-          path: android/app/build/outputs/apk/release/app-release-unsigned.apk
+          path: android/app/build/outputs/apk/**/*.apk
