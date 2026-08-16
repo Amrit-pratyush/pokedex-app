@@ -1,0 +1,20 @@
+{
+  "expo": {
+    "name": "Pokédex",
+    "slug": "pokedex-app",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "userInterfaceStyle": "light",
+    "ios": {
+      "supportsTablet": true
+    },
+    "android": {
+      "package": "com.amritpratyush.pokedexapp"
+    },
+    "extra": {
+      "eas": {
+        "projectId": "763ca8e3-aa22-4a6b-9135-7ecfb5a0be32"
+      }
+    }
+  }
+}
