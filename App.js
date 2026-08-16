@@ -225,12 +225,15 @@ export default function App() {
     return matchups;
   };
 
-  const speakPokemon = (pokemon) => {
+const speakPokemon = (pokemon) => {
     if (!pokemon) return;
 
     const name = capitalize(pokemon.name);
-    const primaryType = pokemon.types[0]?.type?.name;
-    const speechText = `${name}. The ${primaryType} type Pokémon.`;
+    
+    // Join all types (e.g., "fire and flying" or "grass and poison")
+    const typesList = pokemon.types.map((t) => t.type.name).join(' and ');
+    
+    const speechText = `${name}. The ${typesList} type Pokémon.`;
 
     setIsSpeaking(true);
     Speech.stop();
