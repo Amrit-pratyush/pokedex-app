@@ -1,4 +1,4 @@
-name: Build Android APK
+name: Build Standalone Android APK
 
 on:
   workflow_dispatch:
@@ -30,12 +30,15 @@ jobs:
       - name: Generate Android Native Files
         run: npx expo prebuild --platform android --clean
 
-      - name: Build Android APK
+      - name: Configure Signing & Build Standalone Release APK
         working-directory: android
-        run: ./gradlew assembleDebug
+        run: |
+          # Use debug signing key so the release APK is pre-signed and standalone
+          sed -i 's/signingConfig signingConfigs.release/signingConfig signingConfigs.debug/g' app/build.gradle
+          ./gradlew assembleRelease
 
-      - name: Upload Downloadable APK
+      - name: Upload Downloadable Standalone APK
         uses: actions/upload-artifact@v4
         with:
-          name: Pokedex-App-APK
-          path: android/app/build/outputs/apk/**/*.apk
+          name: Pokedex-Standalone-APK
+          path: android/app/build/outputs/apk/release/*.apk
