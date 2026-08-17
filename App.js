@@ -15,6 +15,7 @@ import {
 } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as Speech from 'expo-speech';
+import { Audio } from 'expo-av';
 
 // --- CONFIGURATION & CONSTANTS ---
 const GENERATIONS = [
@@ -78,8 +79,24 @@ const TYPE_CHART = {
   fairy: { fire: 0.5, fighting: 2, poison: 0.5, dragon: 2, dark: 2, steel: 0.5 },
 };
 
-const getTypeColor = (type) => TYPE_COLORS[type?.toLowerCase()] || '#94A3B8';
+const POKEBALL_RATES = {
+  Pokéball: 1,
+  'Great Ball': 1.5,
+  'Ultra Ball': 2,
+  'Fast Ball': 4,
+};
+
+const STATUS_BONUSES = {
+  None: 1,
+  Paralyzed: 1.5,
+  Poisoned: 1.5,
+  Burned: 1.5,
+  Asleep: 2.5,
+  Frozen: 2.5,
+};
+
 const capitalize = (str) => (str ? str.charAt(0).toUpperCase() + str.slice(1).replace(/-/g, ' ') : '');
+const getTypeColor = (type) => TYPE_COLORS[type?.toLowerCase()] || '#94A3B8';
 const formatStatName = (name) => {
   const map = {
     hp: 'HP',
@@ -96,51 +113,89 @@ export default function App() {
   const [selectedGen, setSelectedGen] = useState(1);
   const [selectedType, setSelectedType] = useState('all');
   const [showFavoritesOnly, setShowFavoritesOnly] = useState(false);
+  const [isGlobalShiny, setIsGlobalShiny] = useState(false);
+  const [showTeamModal, setShowTeamModal] = useState(false);
   const [favorites, setFavorites] = useState([]);
-  
+  const [team, setTeam] = useState([]);
+
   const [pokemonList, setPokemonList] = useState([]);
   const [filteredList, setFilteredList] = useState([]);
   const [searchQuery, setSearchQuery] = useState('');
   const [loading, setLoading] = useState(true);
-  
+
   const [selectedPokemon, setSelectedPokemon] = useState(null);
   const [modalVisible, setModalVisible] = useState(false);
   const [activeModalTab, setActiveModalTab] = useState('about');
+  const [modalShiny, setModalShiny] = useState(false);
   const [isSpeaking, setIsSpeaking] = useState(false);
+  const [isPlayingCry, setIsPlayingCry] = useState(false);
 
   const [abilityDetails, setAbilityDetails] = useState({});
   const [allVarieties, setAllVarieties] = useState([]);
+  const [evolutionChain, setEvolutionChain] = useState([]);
+  const [speciesDataState, setSpeciesDataState] = useState(null);
   const [loadingModalData, setLoadingModalData] = useState(false);
 
+  // Calculator State
+  const [calcLevel, setCalcLevel] = useState(50);
+  const [calcNature, setCalcNature] = useState('neutral');
+  const [calcHpPercent, setCalcHpPercent] = useState(100);
+  const [selectedBall, setSelectedBall] = useState('Pokéball');
+  const [selectedStatus, setSelectedStatus] = useState('None');
+
   useEffect(() => {
-    loadFavorites();
+    loadStorageData();
   }, []);
 
   useEffect(() => {
     fetchGenerationPokemon(selectedGen);
   }, [selectedGen]);
 
-  const loadFavorites = async () => {
+  const loadStorageData = async () => {
     try {
-      const stored = await AsyncStorage.getItem('@pokedex_favorites');
-      if (stored) setFavorites(JSON.parse(stored));
+      const storedFavs = await AsyncStorage.getItem('@pokedex_favs');
+      if (storedFavs) setFavorites(JSON.parse(storedFavs));
+      const storedTeam = await AsyncStorage.getItem('@pokedex_team');
+      if (storedTeam) setTeam(JSON.parse(storedTeam));
     } catch (e) {
-      console.log('Error loading favorites:', e);
+      console.log('Error loading storage:', e);
     }
   };
 
   const toggleFavorite = async (pokemonId) => {
     try {
-      let updated;
-      if (favorites.includes(pokemonId)) {
-        updated = favorites.filter((id) => id !== pokemonId);
-      } else {
-        updated = [...favorites, pokemonId];
-      }
+      const updated = favorites.includes(pokemonId)
+        ? favorites.filter((id) => id !== pokemonId)
+        : [...favorites, pokemonId];
       setFavorites(updated);
-      await AsyncStorage.setItem('@pokedex_favorites', JSON.stringify(updated));
+      await AsyncStorage.setItem('@pokedex_favs', JSON.stringify(updated));
     } catch (e) {
       console.log('Error saving favorite:', e);
+    }
+  };
+
+  const toggleTeamMember = async (pokemon) => {
+    try {
+      const exists = team.some((t) => t.id === pokemon.id);
+      let updated;
+      if (exists) {
+        updated = team.filter((t) => t.id !== pokemon.id);
+      } else {
+        if (team.length >= 6) {
+          alert('Your battle team already has the maximum of 6 Pokémon.');
+          return;
+        }
+        updated = [...team, {
+          id: pokemon.id,
+          name: pokemon.name,
+          types: pokemon.types,
+          sprite: pokemon.sprites?.other?.['official-artwork']?.front_default || pokemon.sprites?.front_default,
+        }];
+      }
+      setTeam(updated);
+      await AsyncStorage.setItem('@pokedex_team', JSON.stringify(updated));
+    } catch (e) {
+      console.log('Error saving team:', e);
     }
   };
 
@@ -197,14 +252,30 @@ export default function App() {
     filterPokemonData();
   }, [filterPokemonData]);
 
+  const parseEvolutionNode = (node, chain = []) => {
+    if (!node) return chain;
+    const urlParts = node.species.url.split('/').filter(Boolean);
+    const speciesId = urlParts[urlParts.length - 1];
+    const minLevel = node.evolution_details[0]?.min_level || null;
+    const triggerItem = node.evolution_details[0]?.item?.name || null;
+
+    chain.push({
+      id: speciesId,
+      name: node.species.name,
+      minLevel,
+      triggerItem,
+      imageUrl: `https://raw.githubusercontent.com/PokeAPI/sprites/master/sprites/pokemon/other/official-artwork/${speciesId}.png`,
+    });
+
+    if (node.evolves_to && node.evolves_to.length > 0) {
+      node.evolves_to.forEach((nextStage) => parseEvolutionNode(nextStage, chain));
+    }
+    return chain;
+  };
+
   const calculateTypeEffectiveness = (types) => {
     const attackingTypes = Object.keys(TYPE_CHART);
-    const matchups = {
-      weak: [],
-      resistant: [],
-      immune: [],
-    };
-
+    const matchups = { weak: [], resistant: [], immune: [] };
     const defenderTypes = types.map((t) => t.type.name);
 
     attackingTypes.forEach((attackType) => {
@@ -215,28 +286,39 @@ export default function App() {
         }
       });
 
-      if (multiplier > 1) {
-        matchups.weak.push({ type: attackType, multiplier });
-      } else if (multiplier === 0) {
-        matchups.immune.push({ type: attackType, multiplier });
-      } else if (multiplier < 1) {
-        matchups.resistant.push({ type: attackType, multiplier });
-      }
+      if (multiplier > 1) matchups.weak.push({ type: attackType, multiplier });
+      else if (multiplier === 0) matchups.immune.push({ type: attackType, multiplier });
+      else if (multiplier < 1) matchups.resistant.push({ type: attackType, multiplier });
     });
 
     return matchups;
   };
 
+  const playPokemonCry = async (pokemon) => {
+    const cryUrl = pokemon.cries?.latest || `https://play.pokemonshowdown.com/audio/cries/${pokemon.name.toLowerCase().replace(/-/g, '')}.mp3`;
+    try {
+      setIsPlayingCry(true);
+      const { sound } = await Audio.Sound.createAsync({ uri: cryUrl });
+      await sound.playAsync();
+      sound.setOnPlaybackStatusUpdate((status) => {
+        if (status.didJustFinish) {
+          setIsPlayingCry(false);
+          sound.unloadAsync();
+        }
+      });
+    } catch {
+      setIsPlayingCry(false);
+    }
+  };
+
   const speakPokemon = (pokemon) => {
     if (!pokemon) return;
-
     const name = capitalize(pokemon.name);
     const typesList = pokemon.types.map((t) => t.type.name).join(' and ');
     const speechText = `${name}. The ${typesList} type Pokémon.`;
 
     setIsSpeaking(true);
     Speech.stop();
-
     Speech.speak(speechText, {
       language: 'en-US',
       pitch: 1.15,
@@ -249,13 +331,15 @@ export default function App() {
   const openPokemonDetail = async (pokemon) => {
     setSelectedPokemon(pokemon);
     setActiveModalTab('about');
+    setModalShiny(isGlobalShiny);
     setModalVisible(true);
     setLoadingModalData(true);
     setAbilityDetails({});
     setAllVarieties([]);
+    setEvolutionChain([]);
+    setSpeciesDataState(null);
 
     try {
-      // 1. Fetch Ability Descriptions
       const abilityPromises = pokemon.abilities.map(async (ab) => {
         try {
           const res = await fetch(ab.ability.url);
@@ -263,10 +347,10 @@ export default function App() {
           const effectEntry =
             data.effect_entries.find((e) => e.language.name === 'en')?.short_effect ||
             data.flavor_text_entries.find((f) => f.language.name === 'en')?.flavor_text ||
-            'No effect description available.';
+            'Passive battle ability.';
           return { name: ab.ability.name, effect: effectEntry };
         } catch {
-          return { name: ab.ability.name, effect: 'Effect details unavailable.' };
+          return { name: ab.ability.name, effect: 'Passive battle effect.' };
         }
       });
 
@@ -277,10 +361,10 @@ export default function App() {
       });
       setAbilityDetails(abilityMap);
 
-      // 2. Fetch Species & ALL Alternate Varieties (Megas, Regionals, Forms)
       const speciesRes = await fetch(pokemon.species.url);
       const speciesData = await speciesRes.json();
-      
+      setSpeciesDataState(speciesData);
+
       const alternateEntries = speciesData.varieties.filter(
         (v) => !v.is_default && v.pokemon.name !== pokemon.name
       );
@@ -294,8 +378,15 @@ export default function App() {
         );
         setAllVarieties(forms);
       }
+
+      if (speciesData.evolution_chain?.url) {
+        const evoRes = await fetch(speciesData.evolution_chain.url);
+        const evoData = await evoRes.json();
+        const chain = parseEvolutionNode(evoData.chain);
+        setEvolutionChain(chain);
+      }
     } catch (err) {
-      console.log('Error fetching extra modal info:', err);
+      console.log('Error modal:', err);
     } finally {
       setLoadingModalData(false);
     }
@@ -308,13 +399,39 @@ export default function App() {
     setSelectedPokemon(null);
   };
 
+  const calculateCaptureRate = () => {
+    if (!speciesDataState || !selectedPokemon) return 0;
+    const baseCaptureRate = speciesDataState.capture_rate || 45;
+    const ballMultiplier = POKEBALL_RATES[selectedBall] || 1;
+    const statusMultiplier = STATUS_BONUSES[selectedStatus] || 1;
+    const hpFactor = (3 * 100 - 2 * calcHpPercent) / (3 * 100);
+    const a = Math.min(255, Math.floor(baseCaptureRate * ballMultiplier * hpFactor * statusMultiplier));
+    const captureChance = Math.min(100, Math.max(1, Math.round((a / 255) * 100)));
+    return captureChance;
+  };
+
+  const calculateActualStat = (statName, baseStat) => {
+    const iv = 31;
+    const ev = 85;
+    if (statName === 'hp') {
+      if (baseStat === 1) return 1; // Shedinja
+      return Math.floor(((2 * baseStat + iv + Math.floor(ev / 4)) * calcLevel) / 100) + calcLevel + 10;
+    }
+    const rawStat = Math.floor(((2 * baseStat + iv + Math.floor(ev / 4)) * calcLevel) / 100) + 5;
+    let natureMult = 1.0;
+    if (calcNature === 'beneficial') natureMult = 1.1;
+    if (calcNature === 'hindering') natureMult = 0.9;
+    return Math.floor(rawStat * natureMult);
+  };
+
   const renderPokemonCard = ({ item }) => {
     const mainType = item.types[0]?.type?.name;
     const themeColor = getTypeColor(mainType);
     const isFav = favorites.includes(item.id);
-    const artworkUrl =
-      item.sprites?.other?.['official-artwork']?.front_default ||
-      item.sprites?.front_default;
+    const isInTeam = team.some((t) => t.id === item.id);
+    const artworkUrl = isGlobalShiny
+      ? (item.sprites?.other?.['official-artwork']?.front_shiny || item.sprites?.front_shiny)
+      : (item.sprites?.other?.['official-artwork']?.front_default || item.sprites?.front_default);
 
     return (
       <TouchableOpacity
@@ -324,12 +441,14 @@ export default function App() {
       >
         <View style={styles.cardHeader}>
           <Text style={styles.pokeId}>#{String(item.id).padStart(4, '0')}</Text>
-          <TouchableOpacity
-            onPress={() => toggleFavorite(item.id)}
-            hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
-          >
-            <Text style={styles.cardFavIcon}>{isFav ? '❤️' : '🤍'}</Text>
-          </TouchableOpacity>
+          <View style={{ flexDirection: 'row', gap: 6 }}>
+            <TouchableOpacity onPress={() => toggleTeamMember(item)} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
+              <Text style={{ fontSize: 13 }}>{isInTeam ? '⚔️' : '➕'}</Text>
+            </TouchableOpacity>
+            <TouchableOpacity onPress={() => toggleFavorite(item.id)} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
+              <Text style={styles.cardFavIcon}>{isFav ? '❤️' : '🤍'}</Text>
+            </TouchableOpacity>
+          </View>
         </View>
 
         <Image source={{ uri: artworkUrl }} style={styles.sprite} />
@@ -358,17 +477,28 @@ export default function App() {
 
       <View style={styles.topHeader}>
         <Text style={styles.appTitle}>Pokédex</Text>
-        <TouchableOpacity
-          style={[
-            styles.favHeaderBtn,
-            showFavoritesOnly && styles.favHeaderBtnActive,
-          ]}
-          onPress={() => setShowFavoritesOnly(!showFavoritesOnly)}
-        >
-          <Text style={styles.favHeaderBtnText}>
-            ❤️ {favorites.length}
-          </Text>
-        </TouchableOpacity>
+        <View style={{ flexDirection: 'row', gap: 6 }}>
+          <TouchableOpacity
+            style={[styles.favHeaderBtn, team.length > 0 && styles.teamActiveBtn]}
+            onPress={() => setShowTeamModal(true)}
+          >
+            <Text style={styles.favHeaderBtnText}>⚔️ Team ({team.length}/6)</Text>
+          </TouchableOpacity>
+
+          <TouchableOpacity
+            style={[styles.favHeaderBtn, isGlobalShiny && styles.shinyActiveBtn]}
+            onPress={() => setIsGlobalShiny(!isGlobalShiny)}
+          >
+            <Text style={styles.favHeaderBtnText}>✨ Shiny</Text>
+          </TouchableOpacity>
+
+          <TouchableOpacity
+            style={[styles.favHeaderBtn, showFavoritesOnly && styles.favHeaderBtnActive]}
+            onPress={() => setShowFavoritesOnly(!showFavoritesOnly)}
+          >
+            <Text style={styles.favHeaderBtnText}>❤️ {favorites.length}</Text>
+          </TouchableOpacity>
+        </View>
       </View>
 
       <TextInput
@@ -380,11 +510,7 @@ export default function App() {
       />
 
       <View style={styles.scrollSection}>
-        <ScrollView
-          horizontal
-          showsHorizontalScrollIndicator={false}
-          contentContainerStyle={styles.genScrollContent}
-        >
+        <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.genScrollContent}>
           {GENERATIONS.map((gen) => {
             const isSelected = selectedGen === gen.id;
             return (
@@ -393,12 +519,7 @@ export default function App() {
                 style={[styles.genPill, isSelected && styles.genPillActive]}
                 onPress={() => setSelectedGen(gen.id)}
               >
-                <Text
-                  style={[
-                    styles.genPillText,
-                    isSelected && styles.genPillTextActive,
-                  ]}
-                >
+                <Text style={[styles.genPillText, isSelected && styles.genPillTextActive]}>
                   {gen.name}
                 </Text>
               </TouchableOpacity>
@@ -408,22 +529,14 @@ export default function App() {
       </View>
 
       <View style={styles.scrollSection}>
-        <ScrollView
-          horizontal
-          showsHorizontalScrollIndicator={false}
-          contentContainerStyle={styles.typeScrollContent}
-        >
+        <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.typeScrollContent}>
           {POKEMON_TYPES.map((type) => {
             const isSelected = selectedType === type;
             const bg = type === 'all' ? '#334155' : getTypeColor(type);
             return (
               <TouchableOpacity
                 key={type}
-                style={[
-                  styles.typePill,
-                  { backgroundColor: bg },
-                  isSelected && styles.typePillActive,
-                ]}
+                style={[styles.typePill, { backgroundColor: bg }, isSelected && styles.typePillActive]}
                 onPress={() => setSelectedType(type)}
               >
                 <Text style={styles.typePillText}>{type.toUpperCase()}</Text>
@@ -436,16 +549,12 @@ export default function App() {
       {loading ? (
         <View style={styles.centerContainer}>
           <ActivityIndicator size="large" color="#E3350D" />
-          <Text style={styles.loadingText}>
-            Exploring {GENERATIONS.find((g) => g.id === selectedGen)?.region}...
-          </Text>
+          <Text style={styles.loadingText}>Exploring {GENERATIONS.find((g) => g.id === selectedGen)?.region}...</Text>
         </View>
       ) : filteredList.length === 0 ? (
         <View style={styles.centerContainer}>
           <Text style={styles.emptyTitle}>No Pokémon Found</Text>
-          <Text style={styles.emptySubtitle}>
-            Try changing your generation, type filter, or search query.
-          </Text>
+          <Text style={styles.emptySubtitle}>Try changing your generation or filter.</Text>
         </View>
       ) : (
         <FlatList
@@ -459,27 +568,33 @@ export default function App() {
         />
       )}
 
-      <Modal
-        animationType="slide"
-        transparent={true}
-        visible={modalVisible}
-        onRequestClose={closeModal}
-      >
+      {/* --- DETAIL MODAL --- */}
+      <Modal animationType="slide" transparent={true} visible={modalVisible} onRequestClose={closeModal}>
         <View style={styles.modalOverlay}>
           <View style={styles.modalContent}>
             {selectedPokemon && (
               <ScrollView showsVerticalScrollIndicator={false}>
                 <View style={styles.modalControlBar}>
-                  <TouchableOpacity
-                    onPress={() => toggleFavorite(selectedPokemon.id)}
-                    style={styles.modalFavBtn}
-                  >
-                    <Text style={styles.modalFavBtnText}>
-                      {favorites.includes(selectedPokemon.id)
-                        ? '❤️ In Favorites'
-                        : '🤍 Add Favorite'}
-                    </Text>
-                  </TouchableOpacity>
+                  <View style={{ flexDirection: 'row', gap: 6 }}>
+                    <TouchableOpacity onPress={() => toggleFavorite(selectedPokemon.id)} style={styles.modalFavBtn}>
+                      <Text style={styles.modalFavBtnText}>
+                        {favorites.includes(selectedPokemon.id) ? '❤️ Saved' : '🤍 Save'}
+                      </Text>
+                    </TouchableOpacity>
+
+                    <TouchableOpacity onPress={() => toggleTeamMember(selectedPokemon)} style={styles.modalFavBtn}>
+                      <Text style={styles.modalFavBtnText}>
+                        {team.some((t) => t.id === selectedPokemon.id) ? '⚔️ In Team' : '➕ Add Team'}
+                      </Text>
+                    </TouchableOpacity>
+
+                    <TouchableOpacity
+                      onPress={() => setModalShiny(!modalShiny)}
+                      style={[styles.modalFavBtn, modalShiny && styles.shinyActiveBtn]}
+                    >
+                      <Text style={styles.modalFavBtnText}>✨ Shiny</Text>
+                    </TouchableOpacity>
+                  </View>
 
                   <TouchableOpacity style={styles.closeBtn} onPress={closeModal}>
                     <Text style={styles.closeBtnText}>✕</Text>
@@ -487,21 +602,14 @@ export default function App() {
                 </View>
 
                 <View style={styles.modalHero}>
-                  <Text style={styles.modalId}>
-                    #{String(selectedPokemon.id).padStart(4, '0')}
-                  </Text>
-                  <Text style={styles.modalTitle}>
-                    {capitalize(selectedPokemon.name)}
-                  </Text>
+                  <Text style={styles.modalId}>#{String(selectedPokemon.id).padStart(4, '0')}</Text>
+                  <Text style={styles.modalTitle}>{capitalize(selectedPokemon.name)}</Text>
 
                   <View style={styles.modalTypesRow}>
                     {selectedPokemon.types.map((t) => (
                       <Text
                         key={t.type.name}
-                        style={[
-                          styles.modalTypeBadge,
-                          { backgroundColor: getTypeColor(t.type.name) },
-                        ]}
+                        style={[styles.modalTypeBadge, { backgroundColor: getTypeColor(t.type.name) }]}
                       >
                         {t.type.name.toUpperCase()}
                       </Text>
@@ -509,101 +617,50 @@ export default function App() {
                   </View>
                 </View>
 
+                {/* Animated / High Res Sprite */}
                 <Image
                   source={{
-                    uri:
-                      selectedPokemon.sprites?.other?.['official-artwork']
-                        ?.front_default ||
-                      selectedPokemon.sprites?.front_default,
+                    uri: modalShiny
+                      ? (selectedPokemon.sprites?.other?.showdown?.front_shiny ||
+                         selectedPokemon.sprites?.other?.['official-artwork']?.front_shiny ||
+                         selectedPokemon.sprites?.front_shiny)
+                      : (selectedPokemon.sprites?.other?.showdown?.front_default ||
+                         selectedPokemon.sprites?.other?.['official-artwork']?.front_default ||
+                         selectedPokemon.sprites?.front_default),
                   }}
                   style={styles.modalSprite}
                 />
 
-                <TouchableOpacity
-                  style={[
-                    styles.voiceButton,
-                    {
-                      backgroundColor: getTypeColor(
-                        selectedPokemon.types[0]?.type?.name
-                      ),
-                    },
-                  ]}
-                  onPress={() => speakPokemon(selectedPokemon)}
-                >
-                  <Text style={styles.voiceButtonText}>
-                    {isSpeaking ? '🗣️ Speaking...' : `🗣️ Say "${capitalize(selectedPokemon.name)}"`}
-                  </Text>
-                </TouchableOpacity>
+                {/* Audio Cry and Speech Row */}
+                <View style={{ flexDirection: 'row', justifyContent: 'center', gap: 10, marginBottom: 14 }}>
+                  <TouchableOpacity
+                    style={[styles.voiceButton, { backgroundColor: getTypeColor(selectedPokemon.types[0]?.type?.name) }]}
+                    onPress={() => playPokemonCry(selectedPokemon)}
+                  >
+                    <Text style={styles.voiceButtonText}>{isPlayingCry ? '🔊 Playing Cry...' : '🔊 Play Cry'}</Text>
+                  </TouchableOpacity>
 
+                  <TouchableOpacity
+                    style={[styles.voiceButton, { backgroundColor: '#334155' }]}
+                    onPress={() => speakPokemon(selectedPokemon)}
+                  >
+                    <Text style={styles.voiceButtonText}>{isSpeaking ? '🗣️ Speaking...' : '🗣️ Say Name'}</Text>
+                  </TouchableOpacity>
+                </View>
+
+                {/* Tabs */}
                 <View style={styles.tabContainer}>
-                  <TouchableOpacity
-                    style={[
-                      styles.tabBtn,
-                      activeModalTab === 'about' && styles.tabBtnActive,
-                    ]}
-                    onPress={() => setActiveModalTab('about')}
-                  >
-                    <Text
-                      style={[
-                        styles.tabBtnText,
-                        activeModalTab === 'about' && styles.tabBtnTextActive,
-                      ]}
+                  {['about', 'evolutions', 'forms', 'calc', 'matchups', 'moves'].map((tab) => (
+                    <TouchableOpacity
+                      key={tab}
+                      style={[styles.tabBtn, activeModalTab === tab && styles.tabBtnActive]}
+                      onPress={() => setActiveModalTab(tab)}
                     >
-                      Stats
-                    </Text>
-                  </TouchableOpacity>
-
-                  <TouchableOpacity
-                    style={[
-                      styles.tabBtn,
-                      activeModalTab === 'forms' && styles.tabBtnActive,
-                    ]}
-                    onPress={() => setActiveModalTab('forms')}
-                  >
-                    <Text
-                      style={[
-                        styles.tabBtnText,
-                        activeModalTab === 'forms' && styles.tabBtnTextActive,
-                      ]}
-                    >
-                      Forms {allVarieties.length > 0 ? `(${allVarieties.length})` : ''}
-                    </Text>
-                  </TouchableOpacity>
-
-                  <TouchableOpacity
-                    style={[
-                      styles.tabBtn,
-                      activeModalTab === 'effectiveness' && styles.tabBtnActive,
-                    ]}
-                    onPress={() => setActiveModalTab('effectiveness')}
-                  >
-                    <Text
-                      style={[
-                        styles.tabBtnText,
-                        activeModalTab === 'effectiveness' &&
-                          styles.tabBtnTextActive,
-                      ]}
-                    >
-                      Matchups
-                    </Text>
-                  </TouchableOpacity>
-
-                  <TouchableOpacity
-                    style={[
-                      styles.tabBtn,
-                      activeModalTab === 'moves' && styles.tabBtnActive,
-                    ]}
-                    onPress={() => setActiveModalTab('moves')}
-                  >
-                    <Text
-                      style={[
-                        styles.tabBtnText,
-                        activeModalTab === 'moves' && styles.tabBtnTextActive,
-                      ]}
-                    >
-                      Moves
-                    </Text>
-                  </TouchableOpacity>
+                      <Text style={[styles.tabBtnText, activeModalTab === tab && styles.tabBtnTextActive]}>
+                        {capitalize(tab)}
+                      </Text>
+                    </TouchableOpacity>
+                  ))}
                 </View>
 
                 {activeModalTab === 'about' && (
@@ -611,23 +668,17 @@ export default function App() {
                     <View style={styles.dimensionsCard}>
                       <View style={styles.dimensionItem}>
                         <Text style={styles.dimensionLabel}>Weight</Text>
-                        <Text style={styles.dimensionValue}>
-                          {(selectedPokemon.weight / 10).toFixed(1)} kg
-                        </Text>
+                        <Text style={styles.dimensionValue}>{(selectedPokemon.weight / 10).toFixed(1)} kg</Text>
                       </View>
                       <View style={styles.dimensionDivider} />
                       <View style={styles.dimensionItem}>
                         <Text style={styles.dimensionLabel}>Height</Text>
-                        <Text style={styles.dimensionValue}>
-                          {(selectedPokemon.height / 10).toFixed(1)} m
-                        </Text>
+                        <Text style={styles.dimensionValue}>{(selectedPokemon.height / 10).toFixed(1)} m</Text>
                       </View>
                       <View style={styles.dimensionDivider} />
                       <View style={styles.dimensionItem}>
                         <Text style={styles.dimensionLabel}>Base EXP</Text>
-                        <Text style={styles.dimensionValue}>
-                          {selectedPokemon.base_experience || 'N/A'}
-                        </Text>
+                        <Text style={styles.dimensionValue}>{selectedPokemon.base_experience || 'N/A'}</Text>
                       </View>
                     </View>
 
@@ -636,15 +687,11 @@ export default function App() {
                       {selectedPokemon.abilities.map((item) => (
                         <View key={item.ability.name} style={styles.abilityCard}>
                           <View style={styles.abilityHeaderRow}>
-                            <Text style={styles.abilityTitle}>
-                              {capitalize(item.ability.name)}
-                            </Text>
-                            {item.is_hidden && (
-                              <Text style={styles.hiddenTagBadge}>Hidden Ability</Text>
-                            )}
+                            <Text style={styles.abilityTitle}>{capitalize(item.ability.name)}</Text>
+                            {item.is_hidden && <Text style={styles.hiddenTagBadge}>Hidden</Text>}
                           </View>
                           <Text style={styles.abilityDescText}>
-                            {abilityDetails[item.ability.name] || (loadingModalData ? 'Loading ability description...' : 'Passive battle effect.')}
+                            {abilityDetails[item.ability.name] || (loadingModalData ? 'Loading...' : 'Passive battle effect.')}
                           </Text>
                         </View>
                       ))}
@@ -653,31 +700,14 @@ export default function App() {
                     <Text style={styles.sectionHeader}>Base Stats</Text>
                     <View style={styles.statsContainer}>
                       {selectedPokemon.stats.map((s) => {
-                        const percentage = Math.min(
-                          (s.base_stat / 255) * 100,
-                          100
-                        );
-                        const barColor = getTypeColor(
-                          selectedPokemon.types[0]?.type?.name
-                        );
+                        const percentage = Math.min((s.base_stat / 255) * 100, 100);
+                        const barColor = getTypeColor(selectedPokemon.types[0]?.type?.name);
                         return (
                           <View key={s.stat.name} style={styles.statRow}>
-                            <Text style={styles.statNameLabel}>
-                              {formatStatName(s.stat.name)}
-                            </Text>
-                            <Text style={styles.statValueLabel}>
-                              {s.base_stat}
-                            </Text>
+                            <Text style={styles.statNameLabel}>{formatStatName(s.stat.name)}</Text>
+                            <Text style={styles.statValueLabel}>{s.base_stat}</Text>
                             <View style={styles.statBarBackground}>
-                              <View
-                                style={[
-                                  styles.statBarFill,
-                                  {
-                                    width: `${percentage}%`,
-                                    backgroundColor: barColor,
-                                  },
-                                ]}
-                              />
+                              <View style={[styles.statBarFill, { width: `${percentage}%`, backgroundColor: barColor }]} />
                             </View>
                           </View>
                         );
@@ -686,63 +716,60 @@ export default function App() {
                   </View>
                 )}
 
+                {activeModalTab === 'evolutions' && (
+                  <View>
+                    <Text style={styles.sectionHeader}>Evolutionary Chain</Text>
+                    {evolutionChain.length === 0 ? (
+                      <Text style={styles.neutralText}>No evolution data found.</Text>
+                    ) : (
+                      <View style={styles.evoChainRow}>
+                        {evolutionChain.map((stage, idx) => (
+                          <React.Fragment key={stage.id}>
+                            <View style={styles.evoNode}>
+                              <Image source={{ uri: stage.imageUrl }} style={styles.evoSprite} />
+                              <Text style={styles.evoName}>{capitalize(stage.name)}</Text>
+                              {stage.minLevel && <Text style={styles.evoRequirement}>Lvl {stage.minLevel}</Text>}
+                              {stage.triggerItem && <Text style={styles.evoRequirement}>{capitalize(stage.triggerItem)}</Text>}
+                            </View>
+                            {idx < evolutionChain.length - 1 && <Text style={styles.evoArrow}>➔</Text>}
+                          </React.Fragment>
+                        ))}
+                      </View>
+                    )}
+                  </View>
+                )}
+
                 {activeModalTab === 'forms' && (
                   <View>
-                    {loadingModalData ? (
-                      <View style={{ padding: 20, alignItems: 'center' }}>
-                        <ActivityIndicator size="small" color="#E3350D" />
-                        <Text style={{ marginTop: 8, color: '#64748B' }}>Loading Alternate Forms & Megas...</Text>
-                      </View>
-                    ) : allVarieties.length === 0 ? (
+                    {allVarieties.length === 0 ? (
                       <View style={styles.noMegaBox}>
-                        <Text style={styles.noMegaTitle}>No Alternate Forms</Text>
-                        <Text style={styles.noMegaDesc}>
-                          {capitalize(selectedPokemon.name)} has only its standard form.
-                        </Text>
+                        <Text style={styles.noMegaTitle}>Standard Form Only</Text>
+                        <Text style={styles.noMegaDesc}>{capitalize(selectedPokemon.name)} has no alternate regional or mega forms.</Text>
                       </View>
                     ) : (
                       allVarieties.map((form) => {
-                        const formArt =
-                          form.sprites?.other?.['official-artwork']?.front_default ||
-                          form.sprites?.front_default;
-                        
+                        const formArt = form.sprites?.other?.['official-artwork']?.front_default || form.sprites?.front_default;
                         return (
                           <View key={form.name} style={styles.megaCard}>
                             <Text style={styles.megaFormTitle}>{capitalize(form.name)}</Text>
-                            
                             <View style={styles.modalTypesRow}>
                               {form.types.map((t) => (
-                                <Text
-                                  key={t.type.name}
-                                  style={[
-                                    styles.modalTypeBadge,
-                                    { backgroundColor: getTypeColor(t.type.name) },
-                                  ]}
-                                >
+                                <Text key={t.type.name} style={[styles.modalTypeBadge, { backgroundColor: getTypeColor(t.type.name) }]}>
                                   {t.type.name.toUpperCase()}
                                 </Text>
                               ))}
                             </View>
-
-                            {formArt && (
-                              <Image source={{ uri: formArt }} style={styles.megaSprite} />
-                            )}
-
-                            <Text style={[styles.sectionHeader, { marginTop: 10 }]}>Stat Comparison vs Base Form</Text>
+                            {formArt && <Image source={{ uri: formArt }} style={styles.megaSprite} />}
+                            <Text style={[styles.sectionHeader, { marginTop: 10 }]}>Stat Comparison vs Base</Text>
                             <View style={styles.statsContainer}>
                               {form.stats.map((fStat, idx) => {
                                 const baseStatVal = selectedPokemon.stats[idx]?.base_stat || 0;
                                 const diff = fStat.base_stat - baseStatVal;
                                 const diffColor = diff > 0 ? '#16A34A' : diff < 0 ? '#DC2626' : '#64748B';
-
                                 return (
                                   <View key={fStat.stat.name} style={styles.statRow}>
-                                    <Text style={styles.statNameLabel}>
-                                      {formatStatName(fStat.stat.name)}
-                                    </Text>
-                                    <Text style={styles.statValueLabel}>
-                                      {fStat.base_stat}
-                                    </Text>
+                                    <Text style={styles.statNameLabel}>{formatStatName(fStat.stat.name)}</Text>
+                                    <Text style={styles.statValueLabel}>{fStat.base_stat}</Text>
                                     <Text style={[styles.diffLabel, { color: diffColor }]}>
                                       {diff > 0 ? `+${diff}` : diff === 0 ? '0' : `${diff}`}
                                     </Text>
@@ -757,89 +784,126 @@ export default function App() {
                   </View>
                 )}
 
-                {activeModalTab === 'effectiveness' && (
+                {activeModalTab === 'calc' && (
+                  <View>
+                    {/* Capture Calculator */}
+                    <Text style={styles.sectionHeader}>🎯 Catch Probability Calculator</Text>
+                    <View style={styles.calcCard}>
+                      <Text style={styles.calcTitle}>Calculated Catch Rate: <Text style={{ color: '#E11D48', fontWeight: '900' }}>{calculateCaptureRate()}%</Text></Text>
+                      <Text style={styles.dimensionLabel}>Target Pokémon Remaining HP: {calcHpPercent}%</Text>
+                      <View style={{ flexDirection: 'row', gap: 6, marginVertical: 6 }}>
+                        {[100, 50, 20, 1].map((hp) => (
+                          <TouchableOpacity
+                            key={hp}
+                            style={[styles.smallPill, calcHpPercent === hp && styles.smallPillActive]}
+                            onPress={() => setCalcHpPercent(hp)}
+                          >
+                            <Text style={[styles.smallPillText, calcHpPercent === hp && styles.smallPillTextActive]}>{hp}% HP</Text>
+                          </TouchableOpacity>
+                        ))}
+                      </View>
+
+                      <Text style={[styles.dimensionLabel, { marginTop: 8 }]}>Select Pokéball:</Text>
+                      <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 6, marginVertical: 6 }}>
+                        {Object.keys(POKEBALL_RATES).map((ball) => (
+                          <TouchableOpacity
+                            key={ball}
+                            style={[styles.smallPill, selectedBall === ball && styles.smallPillActive]}
+                            onPress={() => setSelectedBall(ball)}
+                          >
+                            <Text style={[styles.smallPillText, selectedBall === ball && styles.smallPillTextActive]}>{ball}</Text>
+                          </TouchableOpacity>
+                        ))}
+                      </View>
+
+                      <Text style={[styles.dimensionLabel, { marginTop: 8 }]}>Status Condition:</Text>
+                      <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 6, marginVertical: 6 }}>
+                        {Object.keys(STATUS_BONUSES).map((status) => (
+                          <TouchableOpacity
+                            key={status}
+                            style={[styles.smallPill, selectedStatus === status && styles.smallPillActive]}
+                            onPress={() => setSelectedStatus(status)}
+                          >
+                            <Text style={[styles.smallPillText, selectedStatus === status && styles.smallPillTextActive]}>{status}</Text>
+                          </TouchableOpacity>
+                        ))}
+                      </View>
+                    </View>
+
+                    {/* Stat Customizer */}
+                    <Text style={[styles.sectionHeader, { marginTop: 14 }]}>📊 Battle Stat Calculator</Text>
+                    <View style={styles.calcCard}>
+                      <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
+                        <Text style={styles.dimensionLabel}>Target Level: {calcLevel}</Text>
+                        <View style={{ flexDirection: 'row', gap: 6 }}>
+                          {[50, 100].map((lvl) => (
+                            <TouchableOpacity
+                              key={lvl}
+                              style={[styles.smallPill, calcLevel === lvl && styles.smallPillActive]}
+                              onPress={() => setCalcLevel(lvl)}
+                            >
+                              <Text style={[styles.smallPillText, calcLevel === lvl && styles.smallPillTextActive]}>Lvl {lvl}</Text>
+                            </TouchableOpacity>
+                          ))}
+                        </View>
+                      </View>
+
+                      <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
+                        <Text style={styles.dimensionLabel}>Nature Modifier:</Text>
+                        <View style={{ flexDirection: 'row', gap: 6 }}>
+                          {['hindering', 'neutral', 'beneficial'].map((nat) => (
+                            <TouchableOpacity
+                              key={nat}
+                              style={[styles.smallPill, calcNature === nat && styles.smallPillActive]}
+                              onPress={() => setCalcNature(nat)}
+                            >
+                              <Text style={[styles.smallPillText, calcNature === nat && styles.smallPillTextActive]}>{capitalize(nat)}</Text>
+                            </TouchableOpacity>
+                          ))}
+                        </View>
+                      </View>
+
+                      <View style={styles.statsContainer}>
+                        {selectedPokemon.stats.map((s) => {
+                          const realStat = calculateActualStat(s.stat.name, s.base_stat);
+                          return (
+                            <View key={s.stat.name} style={styles.statRow}>
+                              <Text style={styles.statNameLabel}>{formatStatName(s.stat.name)}</Text>
+                              <Text style={styles.statValueLabel}>{realStat}</Text>
+                              <Text style={{ fontSize: 10, color: '#94A3B8', marginLeft: 'auto' }}>Base: {s.base_stat}</Text>
+                            </View>
+                          );
+                        })}
+                      </View>
+                    </View>
+                  </View>
+                )}
+
+                {activeModalTab === 'matchups' && (
                   <View>
                     {(() => {
-                      const matchups = calculateTypeEffectiveness(
-                        selectedPokemon.types
-                      );
+                      const matchups = calculateTypeEffectiveness(selectedPokemon.types);
                       return (
                         <View>
-                          <Text style={styles.sectionHeader}>
-                            ⚠️ Weak Against (Takes 2x - 4x Damage)
-                          </Text>
-                          {matchups.weak.length === 0 ? (
-                            <Text style={styles.neutralText}>None</Text>
-                          ) : (
-                            <View style={styles.typeGrid}>
-                              {matchups.weak.map((m) => (
-                                <View
-                                  key={m.type}
-                                  style={[
-                                    styles.matchupBadge,
-                                    { backgroundColor: getTypeColor(m.type) },
-                                  ]}
-                                >
-                                  <Text style={styles.matchupBadgeText}>
-                                    {m.type.toUpperCase()}
-                                  </Text>
-                                  <Text style={styles.multiplierTag}>
-                                    {m.multiplier}x
-                                  </Text>
-                                </View>
-                              ))}
-                            </View>
-                          )}
+                          <Text style={styles.sectionHeader}>⚠️ Weak Against (Takes 2x - 4x Damage)</Text>
+                          <View style={styles.typeGrid}>
+                            {matchups.weak.map((m) => (
+                              <View key={m.type} style={[styles.matchupBadge, { backgroundColor: getTypeColor(m.type) }]}>
+                                <Text style={styles.matchupBadgeText}>{m.type.toUpperCase()}</Text>
+                                <Text style={styles.multiplierTag}>{m.multiplier}x</Text>
+                              </View>
+                            ))}
+                          </View>
 
-                          <Text style={[styles.sectionHeader, { marginTop: 14 }]}>
-                            🛡️ Resistant To (Takes 0.5x - 0.25x Damage)
-                          </Text>
-                          {matchups.resistant.length === 0 ? (
-                            <Text style={styles.neutralText}>None</Text>
-                          ) : (
-                            <View style={styles.typeGrid}>
-                              {matchups.resistant.map((m) => (
-                                <View
-                                  key={m.type}
-                                  style={[
-                                    styles.matchupBadge,
-                                    { backgroundColor: getTypeColor(m.type) },
-                                  ]}
-                                >
-                                  <Text style={styles.matchupBadgeText}>
-                                    {m.type.toUpperCase()}
-                                  </Text>
-                                  <Text style={styles.multiplierTag}>
-                                    {m.multiplier}x
-                                  </Text>
-                                </View>
-                              ))}
-                            </View>
-                          )}
-
-                          <Text style={[styles.sectionHeader, { marginTop: 14 }]}>
-                            ⛔ Immune To (Takes 0x Damage)
-                          </Text>
-                          {matchups.immune.length === 0 ? (
-                            <Text style={styles.neutralText}>None</Text>
-                          ) : (
-                            <View style={styles.typeGrid}>
-                              {matchups.immune.map((m) => (
-                                <View
-                                  key={m.type}
-                                  style={[
-                                    styles.matchupBadge,
-                                    { backgroundColor: getTypeColor(m.type) },
-                                  ]}
-                                >
-                                  <Text style={styles.matchupBadgeText}>
-                                    {m.type.toUpperCase()}
-                                  </Text>
-                                  <Text style={styles.multiplierTag}>0x</Text>
-                                </View>
-                              ))}
-                            </View>
-                          )}
+                          <Text style={[styles.sectionHeader, { marginTop: 14 }]}>🛡️ Resistant To (Takes 0.5x - 0.25x Damage)</Text>
+                          <View style={styles.typeGrid}>
+                            {matchups.resistant.map((m) => (
+                              <View key={m.type} style={[styles.matchupBadge, { backgroundColor: getTypeColor(m.type) }]}>
+                                <Text style={styles.matchupBadgeText}>{m.type.toUpperCase()}</Text>
+                                <Text style={styles.multiplierTag}>{m.multiplier}x</Text>
+                              </View>
+                            ))}
+                          </View>
                         </View>
                       );
                     })()}
@@ -848,32 +912,20 @@ export default function App() {
 
                 {activeModalTab === 'moves' && (
                   <View>
-                    <Text style={styles.sectionHeader}>
-                      Complete Learned Moveset ({selectedPokemon.moves.length})
-                    </Text>
+                    <Text style={styles.sectionHeader}>Learned Moveset ({selectedPokemon.moves.length})</Text>
                     <View style={styles.movesContainer}>
                       {selectedPokemon.moves.map((m) => {
-                        const learnDetail =
-                          m.version_group_details[0]?.move_learn_method?.name ||
-                          'level-up';
-                        const level =
-                          m.version_group_details[0]?.level_learned_at;
-
+                        const learnDetail = m.version_group_details[0]?.move_learn_method?.name || 'level-up';
+                        const level = m.version_group_details[0]?.level_learned_at;
                         return (
                           <View key={m.move.name} style={styles.moveRow}>
                             <View>
-                              <Text style={styles.moveName}>
-                                {capitalize(m.move.name)}
-                              </Text>
+                              <Text style={styles.moveName}>{capitalize(m.move.name)}</Text>
                               <Text style={styles.moveLearnMethod}>
-                                {learnDetail === 'level-up'
-                                  ? `Level ${level}`
-                                  : capitalize(learnDetail)}
+                                {learnDetail === 'level-up' ? `Level ${level}` : capitalize(learnDetail)}
                               </Text>
                             </View>
-                            <Text style={styles.moveLearnTag}>
-                              {learnDetail.toUpperCase()}
-                            </Text>
+                            <Text style={styles.moveLearnTag}>{learnDetail.toUpperCase()}</Text>
                           </View>
                         );
                       })}
@@ -885,521 +937,173 @@ export default function App() {
           </View>
         </View>
       </Modal>
+
+      {/* --- TEAM BUILDER & COVERAGE MODAL --- */}
+      <Modal animationType="slide" transparent={true} visible={showTeamModal} onRequestClose={() => setShowTeamModal(false)}>
+        <View style={styles.modalOverlay}>
+          <View style={styles.modalContent}>
+            <View style={styles.modalControlBar}>
+              <Text style={styles.modalTitle}>Battle Team ({team.length}/6)</Text>
+              <TouchableOpacity style={styles.closeBtn} onPress={() => setShowTeamModal(false)}>
+                <Text style={styles.closeBtnText}>✕</Text>
+              </TouchableOpacity>
+            </View>
+
+            <ScrollView showsVerticalScrollIndicator={false}>
+              {team.length === 0 ? (
+                <View style={styles.noMegaBox}>
+                  <Text style={styles.noMegaTitle}>No Pokémon in Team</Text>
+                  <Text style={styles.noMegaDesc}>Tap ⚔️ on any Pokémon card or detail view to assemble a team of 6.</Text>
+                </View>
+              ) : (
+                <View>
+                  <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginVertical: 10 }}>
+                    {team.map((member) => (
+                      <View key={member.id} style={styles.teamMemberCard}>
+                        <Image source={{ uri: member.sprite }} style={{ width: 60, height: 60 }} />
+                        <Text style={styles.pokeName}>{capitalize(member.name)}</Text>
+                        <TouchableOpacity onPress={() => toggleTeamMember(member)}>
+                          <Text style={{ color: '#E11D48', fontSize: 11, fontWeight: 'bold', marginTop: 4 }}>Remove ✖</Text>
+                        </TouchableOpacity>
+                      </View>
+                    ))}
+                  </View>
+
+                  <Text style={styles.sectionHeader}>Team Shared Weaknesses</Text>
+                  <View style={styles.calcCard}>
+                    {(() => {
+                      const weaknessCounts = {};
+                      team.forEach((member) => {
+                        const matchups = calculateTypeEffectiveness(member.types);
+                        matchups.weak.forEach((w) => {
+                          weaknessCounts[w.type] = (weaknessCounts[w.type] || 0) + 1;
+                        });
+                      });
+
+                      const sortedWeaknesses = Object.entries(weaknessCounts).sort((a, b) => b[1] - a[1]);
+
+                      return (
+                        <View style={styles.typeGrid}>
+                          {sortedWeaknesses.map(([tName, count]) => (
+                            <View key={tName} style={[styles.matchupBadge, { backgroundColor: getTypeColor(tName) }]}>
+                              <Text style={styles.matchupBadgeText}>{tName.toUpperCase()}</Text>
+                              <Text style={styles.multiplierTag}>{count} Weak</Text>
+                            </View>
+                          ))}
+                        </View>
+                      );
+                    })()}
+                  </View>
+                </View>
+              )}
+            </ScrollView>
+          </View>
+        </View>
+      </Modal>
     </SafeAreaView>
   );
 }
 
 const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-    backgroundColor: '#F8FAFC',
-  },
-  topHeader: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    paddingHorizontal: 16,
-    paddingTop: 10,
-    marginBottom: 8,
-  },
-  appTitle: {
-    fontSize: 26,
-    fontWeight: '900',
-    color: '#0F172A',
-  },
-  favHeaderBtn: {
-    backgroundColor: '#F1F5F9',
-    paddingHorizontal: 12,
-    paddingVertical: 6,
-    borderRadius: 20,
-    borderWidth: 1,
-    borderColor: '#E2E8F0',
-  },
-  favHeaderBtnActive: {
-    backgroundColor: '#FEE2E2',
-    borderColor: '#FCA5A5',
-  },
-  favHeaderBtnText: {
-    fontSize: 13,
-    fontWeight: '700',
-    color: '#E11D48',
-  },
-  searchBar: {
-    backgroundColor: '#FFF',
-    marginHorizontal: 16,
-    paddingHorizontal: 14,
-    paddingVertical: 10,
-    borderRadius: 12,
-    fontSize: 14,
-    borderWidth: 1,
-    borderColor: '#E2E8F0',
-    marginBottom: 8,
-  },
-  scrollSection: {
-    marginBottom: 8,
-  },
-  genScrollContent: {
-    paddingHorizontal: 16,
-    gap: 8,
-  },
-  genPill: {
-    paddingHorizontal: 12,
-    paddingVertical: 6,
-    borderRadius: 10,
-    backgroundColor: '#E2E8F0',
-  },
-  genPillActive: {
-    backgroundColor: '#0284C7',
-  },
-  genPillText: {
-    fontSize: 12,
-    fontWeight: '700',
-    color: '#475569',
-  },
-  genPillTextActive: {
-    color: '#FFF',
-  },
-  typeScrollContent: {
-    paddingHorizontal: 16,
-    gap: 6,
-  },
-  typePill: {
-    paddingHorizontal: 10,
-    paddingVertical: 4,
-    borderRadius: 8,
-    opacity: 0.75,
-  },
-  typePillActive: {
-    opacity: 1,
-    transform: [{ scale: 1.05 }],
-  },
-  typePillText: {
-    fontSize: 10,
-    fontWeight: 'bold',
-    color: '#FFF',
-  },
-  listContent: {
-    paddingHorizontal: 10,
-    paddingBottom: 24,
-  },
-  gridRow: {
-    justifyContent: 'space-between',
-  },
-  card: {
-    flex: 1,
-    backgroundColor: '#FFF',
-    margin: 6,
-    padding: 12,
-    borderRadius: 16,
-    alignItems: 'center',
-    borderWidth: 2,
-    elevation: 3,
-    shadowColor: '#000',
-    shadowOpacity: 0.06,
-    shadowOffset: { width: 0, height: 2 },
-    shadowRadius: 6,
-  },
-  cardHeader: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    width: '100%',
-    alignItems: 'center',
-  },
-  pokeId: {
-    fontSize: 11,
-    fontWeight: 'bold',
-    color: '#94A3B8',
-  },
-  cardFavIcon: {
-    fontSize: 14,
-  },
-  sprite: {
-    width: 90,
-    height: 90,
-    marginVertical: 4,
-  },
-  pokeName: {
-    fontSize: 14,
-    fontWeight: 'bold',
-    color: '#1E293B',
-  },
-  typesRow: {
-    flexDirection: 'row',
-    gap: 4,
-    marginTop: 4,
-  },
-  typeBadge: {
-    paddingHorizontal: 6,
-    paddingVertical: 2,
-    borderRadius: 6,
-    fontSize: 9,
-    fontWeight: 'bold',
-    color: '#FFF',
-  },
-  centerContainer: {
-    flex: 1,
-    justifyContent: 'center',
-    alignItems: 'center',
-    paddingHorizontal: 20,
-  },
-  loadingText: {
-    marginTop: 10,
-    color: '#64748B',
-    fontSize: 14,
-  },
-  emptyTitle: {
-    fontSize: 16,
-    fontWeight: 'bold',
-    color: '#334155',
-  },
-  emptySubtitle: {
-    fontSize: 13,
-    color: '#94A3B8',
-    textAlign: 'center',
-    marginTop: 4,
-  },
-  modalOverlay: {
-    flex: 1,
-    backgroundColor: 'rgba(0, 0, 0, 0.55)',
-    justifyContent: 'flex-end',
-  },
-  modalContent: {
-    backgroundColor: '#FFF',
-    borderTopLeftRadius: 28,
-    borderTopRightRadius: 28,
-    paddingHorizontal: 20,
-    paddingTop: 16,
-    paddingBottom: 36,
-    maxHeight: '90%',
-  },
-  modalControlBar: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    marginBottom: 6,
-  },
-  modalFavBtn: {
-    backgroundColor: '#F8FAFC',
-    paddingHorizontal: 10,
-    paddingVertical: 6,
-    borderRadius: 8,
-    borderWidth: 1,
-    borderColor: '#E2E8F0',
-  },
-  modalFavBtnText: {
-    fontSize: 12,
-    fontWeight: '700',
-    color: '#334155',
-  },
-  closeBtn: {
-    backgroundColor: '#F1F5F9',
-    width: 32,
-    height: 32,
-    borderRadius: 16,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  closeBtnText: {
-    fontSize: 14,
-    fontWeight: 'bold',
-    color: '#64748B',
-  },
-  modalHero: {
-    alignItems: 'center',
-    marginTop: 4,
-  },
-  modalId: {
-    fontSize: 13,
-    fontWeight: '700',
-    color: '#94A3B8',
-  },
-  modalTitle: {
-    fontSize: 24,
-    fontWeight: '800',
-    color: '#0F172A',
-    marginTop: 2,
-  },
-  modalTypesRow: {
-    flexDirection: 'row',
-    gap: 8,
-    marginTop: 6,
-    alignSelf: 'center',
-  },
-  modalTypeBadge: {
-    paddingHorizontal: 10,
-    paddingVertical: 4,
-    borderRadius: 8,
-    fontSize: 11,
-    fontWeight: 'bold',
-    color: '#FFF',
-  },
-  modalSprite: {
-    width: 170,
-    height: 170,
-    alignSelf: 'center',
-    marginVertical: 6,
-  },
-  voiceButton: {
-    alignSelf: 'center',
-    paddingHorizontal: 18,
-    paddingVertical: 8,
-    borderRadius: 22,
-    marginBottom: 14,
-    elevation: 2,
-  },
-  voiceButtonText: {
-    color: '#FFF',
-    fontSize: 13,
-    fontWeight: 'bold',
-  },
-  tabContainer: {
-    flexDirection: 'row',
-    backgroundColor: '#F1F5F9',
-    borderRadius: 12,
-    padding: 4,
-    marginBottom: 16,
-  },
-  tabBtn: {
-    flex: 1,
-    paddingVertical: 8,
-    alignItems: 'center',
-    borderRadius: 8,
-  },
-  tabBtnActive: {
-    backgroundColor: '#FFF',
-    elevation: 1,
-    shadowColor: '#000',
-    shadowOpacity: 0.05,
-    shadowRadius: 2,
-  },
-  tabBtnText: {
-    fontSize: 12,
-    fontWeight: '700',
-    color: '#64748B',
-  },
-  tabBtnTextActive: {
-    color: '#0F172A',
-  },
-  dimensionsCard: {
-    flexDirection: 'row',
-    backgroundColor: '#F8FAFC',
-    borderRadius: 14,
-    paddingVertical: 12,
-    justifyContent: 'space-around',
-    alignItems: 'center',
-    marginBottom: 16,
-    borderWidth: 1,
-    borderColor: '#E2E8F0',
-  },
-  dimensionItem: {
-    alignItems: 'center',
-    flex: 1,
-  },
-  dimensionLabel: {
-    fontSize: 11,
-    color: '#64748B',
-    marginBottom: 2,
-    fontWeight: '600',
-  },
-  dimensionValue: {
-    fontSize: 13,
-    fontWeight: '700',
-    color: '#1E293B',
-  },
-  dimensionDivider: {
-    width: 1,
-    height: 24,
-    backgroundColor: '#CBD5E1',
-  },
-  sectionHeader: {
-    fontSize: 14,
-    fontWeight: '700',
-    color: '#1E293B',
-    marginBottom: 8,
-  },
-  abilitiesList: {
-    gap: 8,
-    marginBottom: 16,
-  },
-  abilityCard: {
-    backgroundColor: '#F8FAFC',
-    borderRadius: 12,
-    padding: 12,
-    borderWidth: 1,
-    borderColor: '#E2E8F0',
-  },
-  abilityHeaderRow: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    marginBottom: 4,
-  },
-  abilityTitle: {
-    fontSize: 13,
-    fontWeight: '700',
-    color: '#1E293B',
-  },
-  hiddenTagBadge: {
-    fontSize: 10,
-    fontWeight: '700',
-    color: '#E11D48',
-    backgroundColor: '#FFE4E6',
-    paddingHorizontal: 6,
-    paddingVertical: 2,
-    borderRadius: 4,
-  },
-  abilityDescText: {
-    fontSize: 12,
-    color: '#475569',
-    lineHeight: 17,
-  },
-  statsContainer: {
-    backgroundColor: '#F8FAFC',
-    borderRadius: 14,
-    padding: 14,
-    borderWidth: 1,
-    borderColor: '#E2E8F0',
-  },
-  statRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    marginVertical: 4,
-  },
-  statNameLabel: {
-    width: 65,
-    fontSize: 11,
-    fontWeight: '700',
-    color: '#64748B',
-  },
-  statValueLabel: {
-    width: 32,
-    fontSize: 12,
-    fontWeight: 'bold',
-    color: '#1E293B',
-    textAlign: 'right',
-    marginRight: 10,
-  },
-  diffLabel: {
-    marginLeft: 'auto',
-    fontSize: 12,
-    fontWeight: '800',
-  },
-  statBarBackground: {
-    flex: 1,
-    height: 8,
-    backgroundColor: '#E2E8F0',
-    borderRadius: 4,
-    overflow: 'hidden',
-  },
-  statBarFill: {
-    height: '100%',
-    borderRadius: 4,
-  },
-  megaCard: {
-    backgroundColor: '#F8FAFC',
-    borderRadius: 16,
-    padding: 16,
-    borderWidth: 1,
-    borderColor: '#E2E8F0',
-    marginBottom: 16,
-  },
-  megaFormTitle: {
-    fontSize: 18,
-    fontWeight: '800',
-    color: '#0F172A',
-    textAlign: 'center',
-    marginBottom: 6,
-  },
-  megaSprite: {
-    width: 140,
-    height: 140,
-    alignSelf: 'center',
-    marginVertical: 8,
-  },
-  noMegaBox: {
-    backgroundColor: '#F8FAFC',
-    borderRadius: 14,
-    padding: 24,
-    alignItems: 'center',
-    borderWidth: 1,
-    borderColor: '#E2E8F0',
-    marginVertical: 10,
-  },
-  noMegaTitle: {
-    fontSize: 15,
-    fontWeight: '700',
-    color: '#334155',
-  },
-  noMegaDesc: {
-    fontSize: 12,
-    color: '#94A3B8',
-    textAlign: 'center',
-    marginTop: 4,
-  },
-  typeGrid: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: 6,
-  },
-  matchupBadge: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    paddingHorizontal: 8,
-    paddingVertical: 4,
-    borderRadius: 6,
-    gap: 4,
-  },
-  matchupBadgeText: {
-    fontSize: 10,
-    fontWeight: 'bold',
-    color: '#FFF',
-  },
-  multiplierTag: {
-    backgroundColor: 'rgba(0,0,0,0.25)',
-    paddingHorizontal: 4,
-    paddingVertical: 1,
-    borderRadius: 4,
-    fontSize: 9,
-    fontWeight: 'bold',
-    color: '#FFF',
-  },
-  neutralText: {
-    fontSize: 12,
-    color: '#94A3B8',
-    fontStyle: 'italic',
-  },
-  movesContainer: {
-    backgroundColor: '#F8FAFC',
-    borderRadius: 12,
-    padding: 8,
-    borderWidth: 1,
-    borderColor: '#E2E8F0',
-  },
-  moveRow: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    paddingVertical: 8,
-    borderBottomWidth: 1,
-    borderBottomColor: '#E2E8F0',
-  },
-  moveName: {
-    fontSize: 13,
-    fontWeight: '700',
-    color: '#1E293B',
-  },
-  moveLearnMethod: {
-    fontSize: 11,
-    color: '#64748B',
-    marginTop: 2,
-  },
-  moveLearnTag: {
-    fontSize: 10,
-    fontWeight: 'bold',
-    color: '#0284C7',
-    backgroundColor: '#E0F2FE',
-    paddingHorizontal: 6,
-    paddingVertical: 2,
-    borderRadius: 4,
-  },
+  container: { flex: 1, backgroundColor: '#F8FAFC' },
+  topHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingHorizontal: 16, paddingTop: 10, marginBottom: 8 },
+  appTitle: { fontSize: 26, fontWeight: '900', color: '#0F172A' },
+  favHeaderBtn: { backgroundColor: '#F1F5F9', paddingHorizontal: 10, paddingVertical: 6, borderRadius: 20, borderWidth: 1, borderColor: '#E2E8F0' },
+  favHeaderBtnActive: { backgroundColor: '#FEE2E2', borderColor: '#FCA5A5' },
+  shinyActiveBtn: { backgroundColor: '#FEF3C7', borderColor: '#FCD34D' },
+  teamActiveBtn: { backgroundColor: '#E0F2FE', borderColor: '#7DD3FC' },
+  favHeaderBtnText: { fontSize: 12, fontWeight: '700', color: '#334155' },
+  searchBar: { backgroundColor: '#FFF', marginHorizontal: 16, paddingHorizontal: 14, paddingVertical: 10, borderRadius: 12, fontSize: 14, borderWidth: 1, borderColor: '#E2E8F0', marginBottom: 8 },
+  scrollSection: { marginBottom: 8 },
+  genScrollContent: { paddingHorizontal: 16, gap: 8 },
+  genPill: { paddingHorizontal: 12, paddingVertical: 6, borderRadius: 10, backgroundColor: '#E2E8F0' },
+  genPillActive: { backgroundColor: '#0284C7' },
+  genPillText: { fontSize: 12, fontWeight: '700', color: '#475569' },
+  genPillTextActive: { color: '#FFF' },
+  typeScrollContent: { paddingHorizontal: 16, gap: 6 },
+  typePill: { paddingHorizontal: 10, paddingVertical: 4, borderRadius: 8, opacity: 0.75 },
+  typePillActive: { opacity: 1, transform: [{ scale: 1.05 }] },
+  typePillText: { fontSize: 10, fontWeight: 'bold', color: '#FFF' },
+  listContent: { paddingHorizontal: 10, paddingBottom: 24 },
+  gridRow: { justifyContent: 'space-between' },
+  card: { flex: 1, backgroundColor: '#FFF', margin: 6, padding: 12, borderRadius: 16, alignItems: 'center', borderWidth: 2, elevation: 3 },
+  cardHeader: { flexDirection: 'row', justifyContent: 'space-between', width: '100%', alignItems: 'center' },
+  pokeId: { fontSize: 11, fontWeight: 'bold', color: '#94A3B8' },
+  cardFavIcon: { fontSize: 14 },
+  sprite: { width: 90, height: 90, marginVertical: 4 },
+  pokeName: { fontSize: 14, fontWeight: 'bold', color: '#1E293B' },
+  typesRow: { flexDirection: 'row', gap: 4, marginTop: 4 },
+  typeBadge: { paddingHorizontal: 6, paddingVertical: 2, borderRadius: 6, fontSize: 9, fontWeight: 'bold', color: '#FFF' },
+  centerContainer: { flex: 1, justifyContent: 'center', alignItems: 'center', paddingHorizontal: 20 },
+  loadingText: { marginTop: 10, color: '#64748B', fontSize: 14 },
+  emptyTitle: { fontSize: 16, fontWeight: 'bold', color: '#334155' },
+  emptySubtitle: { fontSize: 13, color: '#94A3B8', textAlign: 'center', marginTop: 4 },
+  modalOverlay: { flex: 1, backgroundColor: 'rgba(0, 0, 0, 0.55)', justifyContent: 'flex-end' },
+  modalContent: { backgroundColor: '#FFF', borderTopLeftRadius: 28, borderTopRightRadius: 28, paddingHorizontal: 20, paddingTop: 16, paddingBottom: 36, maxHeight: '90%' },
+  modalControlBar: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 },
+  modalFavBtn: { backgroundColor: '#F8FAFC', paddingHorizontal: 8, paddingVertical: 6, borderRadius: 8, borderWidth: 1, borderColor: '#E2E8F0' },
+  modalFavBtnText: { fontSize: 11, fontWeight: '700', color: '#334155' },
+  closeBtn: { backgroundColor: '#F1F5F9', width: 32, height: 32, borderRadius: 16, alignItems: 'center', justifyContent: 'center' },
+  closeBtnText: { fontSize: 14, fontWeight: 'bold', color: '#64748B' },
+  modalHero: { alignItems: 'center', marginTop: 4 },
+  modalId: { fontSize: 13, fontWeight: '700', color: '#94A3B8' },
+  modalTitle: { fontSize: 24, fontWeight: '800', color: '#0F172A', marginTop: 2 },
+  modalTypesRow: { flexDirection: 'row', gap: 8, marginTop: 6, alignSelf: 'center' },
+  modalTypeBadge: { paddingHorizontal: 10, paddingVertical: 4, borderRadius: 8, fontSize: 11, fontWeight: 'bold', color: '#FFF' },
+  modalSprite: { width: 140, height: 140, alignSelf: 'center', marginVertical: 6, resizeMode: 'contain' },
+  voiceButton: { paddingHorizontal: 14, paddingVertical: 8, borderRadius: 20, elevation: 2 },
+  voiceButtonText: { color: '#FFF', fontSize: 12, fontWeight: 'bold' },
+  tabContainer: { flexDirection: 'row', backgroundColor: '#F1F5F9', borderRadius: 12, padding: 4, marginBottom: 16 },
+  tabBtn: { flex: 1, paddingVertical: 8, alignItems: 'center', borderRadius: 8 },
+  tabBtnActive: { backgroundColor: '#FFF', elevation: 1 },
+  tabBtnText: { fontSize: 11, fontWeight: '700', color: '#64748B' },
+  tabBtnTextActive: { color: '#0F172A' },
+  dimensionsCard: { flexDirection: 'row', backgroundColor: '#F8FAFC', borderRadius: 14, paddingVertical: 12, justifyContent: 'space-around', alignItems: 'center', marginBottom: 16, borderWidth: 1, borderColor: '#E2E8F0' },
+  dimensionItem: { alignItems: 'center', flex: 1 },
+  dimensionLabel: { fontSize: 11, color: '#64748B', marginBottom: 2, fontWeight: '600' },
+  dimensionValue: { fontSize: 13, fontWeight: '700', color: '#1E293B' },
+  dimensionDivider: { width: 1, height: 24, backgroundColor: '#CBD5E1' },
+  sectionHeader: { fontSize: 14, fontWeight: '700', color: '#1E293B', marginBottom: 8 },
+  abilitiesList: { gap: 8, marginBottom: 16 },
+  abilityCard: { backgroundColor: '#F8FAFC', borderRadius: 12, padding: 12, borderWidth: 1, borderColor: '#E2E8F0' },
+  abilityHeaderRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 4 },
+  abilityTitle: { fontSize: 13, fontWeight: '700', color: '#1E293B' },
+  hiddenTagBadge: { fontSize: 10, fontWeight: '700', color: '#E11D48', backgroundColor: '#FFE4E6', paddingHorizontal: 6, paddingVertical: 2, borderRadius: 4 },
+  abilityDescText: { fontSize: 12, color: '#475569', lineHeight: 17 },
+  statsContainer: { backgroundColor: '#F8FAFC', borderRadius: 14, padding: 14, borderWidth: 1, borderColor: '#E2E8F0' },
+  statRow: { flexDirection: 'row', alignItems: 'center', marginVertical: 4 },
+  statNameLabel: { width: 65, fontSize: 11, fontWeight: '700', color: '#64748B' },
+  statValueLabel: { width: 32, fontSize: 12, fontWeight: 'bold', color: '#1E293B', textAlign: 'right', marginRight: 10 },
+  diffLabel: { marginLeft: 'auto', fontSize: 12, fontWeight: '800' },
+  statBarBackground: { flex: 1, height: 8, backgroundColor: '#E2E8F0', borderRadius: 4, overflow: 'hidden' },
+  statBarFill: { height: '100%', borderRadius: 4 },
+  evoChainRow: { flexDirection: 'row', justifyContent: 'space-around', alignItems: 'center', paddingVertical: 12, backgroundColor: '#F8FAFC', borderRadius: 14, borderWidth: 1, borderColor: '#E2E8F0', marginBottom: 16 },
+  evoNode: { alignItems: 'center', width: 80 },
+  evoSprite: { width: 60, height: 60 },
+  evoName: { fontSize: 11, fontWeight: 'bold', color: '#1E293B', marginTop: 2 },
+  evoRequirement: { fontSize: 9, color: '#0284C7', fontWeight: '700' },
+  evoArrow: { fontSize: 16, color: '#94A3B8', fontWeight: 'bold' },
+  megaCard: { backgroundColor: '#F8FAFC', borderRadius: 16, padding: 16, borderWidth: 1, borderColor: '#E2E8F0', marginBottom: 16 },
+  megaFormTitle: { fontSize: 18, fontWeight: '800', color: '#0F172A', textAlign: 'center', marginBottom: 6 },
+  megaSprite: { width: 120, height: 120, alignSelf: 'center', marginVertical: 8 },
+  noMegaBox: { backgroundColor: '#F8FAFC', borderRadius: 14, padding: 24, alignItems: 'center', borderWidth: 1, borderColor: '#E2E8F0', marginVertical: 10 },
+  noMegaTitle: { fontSize: 15, fontWeight: '700', color: '#334155' },
+  noMegaDesc: { fontSize: 12, color: '#94A3B8', textAlign: 'center', marginTop: 4 },
+  typeGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 6 },
+  matchupBadge: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: 8, paddingVertical: 4, borderRadius: 6, gap: 4 },
+  matchupBadgeText: { fontSize: 10, fontWeight: 'bold', color: '#FFF' },
+  multiplierTag: { backgroundColor: 'rgba(0,0,0,0.25)', paddingHorizontal: 4, paddingVertical: 1, borderRadius: 4, fontSize: 9, fontWeight: 'bold', color: '#FFF' },
+  neutralText: { fontSize: 12, color: '#94A3B8', fontStyle: 'italic' },
+  movesContainer: { backgroundColor: '#F8FAFC', borderRadius: 12, padding: 8, borderWidth: 1, borderColor: '#E2E8F0' },
+  moveRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingVertical: 8, borderBottomWidth: 1, borderBottomColor: '#E2E8F0' },
+  moveName: { fontSize: 13, fontWeight: '700', color: '#1E293B' },
+  moveLearnMethod: { fontSize: 11, color: '#64748B', marginTop: 2 },
+  moveLearnTag: { fontSize: 10, fontWeight: 'bold', color: '#0284C7', backgroundColor: '#E0F2FE', paddingHorizontal: 6, paddingVertical: 2, borderRadius: 4 },
+  calcCard: { backgroundColor: '#F8FAFC', borderRadius: 14, padding: 14, borderWidth: 1, borderColor: '#E2E8F0', marginBottom: 14 },
+  calcTitle: { fontSize: 13, fontWeight: '700', color: '#1E293B', marginBottom: 8 },
+  smallPill: { paddingHorizontal: 8, paddingVertical: 4, borderRadius: 8, backgroundColor: '#E2E8F0' },
+  smallPillActive: { backgroundColor: '#0284C7' },
+  smallPillText: { fontSize: 11, fontWeight: '600', color: '#475569' },
+  smallPillTextActive: { color: '#FFF' },
+  teamMemberCard: { backgroundColor: '#FFF', borderRadius: 12, padding: 10, alignItems: 'center', width: 95, borderWidth: 1, borderColor: '#E2E8F0' },
 });
