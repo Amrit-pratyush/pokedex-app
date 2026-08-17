@@ -30,10 +30,19 @@ jobs:
       - name: Generate Android Native Files
         run: npx expo prebuild --platform android --clean
 
-      - name: Configure Signing & Build Standalone Release APK
+      - name: Fix Missing Colors & Build Standalone APK
         working-directory: android
         run: |
-          # Use debug signing key so the release APK is pre-signed and standalone
+          # Create colors.xml with the required splashscreen_background color
+          mkdir -p app/src/main/res/values
+          cat <<EOF > app/src/main/res/values/colors.xml
+          <?xml version="1.0" encoding="utf-8"?>
+          <resources>
+              <color name="splashscreen_background">#ffffff</color>
+          </resources>
+          EOF
+
+          # Configure release to use standalone debug signing
           sed -i 's/signingConfig signingConfigs.release/signingConfig signingConfigs.debug/g' app/build.gradle
           ./gradlew assembleRelease
 
