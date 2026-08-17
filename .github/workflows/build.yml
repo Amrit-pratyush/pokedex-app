@@ -41,6 +41,7 @@ jobs:
               <color name="colorPrimaryDark">#0369A1</color>
               <color name="colorAccent">#E11D48</color>
               <color name="splashscreen_background">#ffffff</color>
+              <color name="iconBackground">#ffffff</color>
           </resources>
           EOF
 
