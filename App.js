@@ -109,7 +109,7 @@ export default function App() {
   const [isSpeaking, setIsSpeaking] = useState(false);
 
   const [abilityDetails, setAbilityDetails] = useState({});
-  const [megaVarieties, setMegaVarieties] = useState([]);
+  const [allVarieties, setAllVarieties] = useState([]);
   const [loadingModalData, setLoadingModalData] = useState(false);
 
   useEffect(() => {
@@ -252,10 +252,10 @@ export default function App() {
     setModalVisible(true);
     setLoadingModalData(true);
     setAbilityDetails({});
-    setMegaVarieties([]);
+    setAllVarieties([]);
 
     try {
-      // 1. Fetch ability descriptions
+      // 1. Fetch Ability Descriptions
       const abilityPromises = pokemon.abilities.map(async (ab) => {
         try {
           const res = await fetch(ab.ability.url);
@@ -277,22 +277,22 @@ export default function App() {
       });
       setAbilityDetails(abilityMap);
 
-      // 2. Fetch Species & Check for Mega Evolutions
+      // 2. Fetch Species & ALL Alternate Varieties (Megas, Regionals, Forms)
       const speciesRes = await fetch(pokemon.species.url);
       const speciesData = await speciesRes.json();
       
-      const megaEntries = speciesData.varieties.filter(
-        (v) => !v.is_default && v.pokemon.name.includes('-mega')
+      const alternateEntries = speciesData.varieties.filter(
+        (v) => !v.is_default && v.pokemon.name !== pokemon.name
       );
 
-      if (megaEntries.length > 0) {
-        const megas = await Promise.all(
-          megaEntries.map(async (m) => {
-            const mRes = await fetch(m.pokemon.url);
-            return await mRes.json();
+      if (alternateEntries.length > 0) {
+        const forms = await Promise.all(
+          alternateEntries.map(async (f) => {
+            const fRes = await fetch(f.pokemon.url);
+            return await fRes.json();
           })
         );
-        setMegaVarieties(megas);
+        setAllVarieties(forms);
       }
     } catch (err) {
       console.log('Error fetching extra modal info:', err);
@@ -556,17 +556,17 @@ export default function App() {
                   <TouchableOpacity
                     style={[
                       styles.tabBtn,
-                      activeModalTab === 'mega' && styles.tabBtnActive,
+                      activeModalTab === 'forms' && styles.tabBtnActive,
                     ]}
-                    onPress={() => setActiveModalTab('mega')}
+                    onPress={() => setActiveModalTab('forms')}
                   >
                     <Text
                       style={[
                         styles.tabBtnText,
-                        activeModalTab === 'mega' && styles.tabBtnTextActive,
+                        activeModalTab === 'forms' && styles.tabBtnTextActive,
                       ]}
                     >
-                      Mega {megaVarieties.length > 0 ? `(${megaVarieties.length})` : ''}
+                      Forms {allVarieties.length > 0 ? `(${allVarieties.length})` : ''}
                     </Text>
                   </TouchableOpacity>
 
@@ -686,32 +686,32 @@ export default function App() {
                   </View>
                 )}
 
-                {activeModalTab === 'mega' && (
+                {activeModalTab === 'forms' && (
                   <View>
                     {loadingModalData ? (
                       <View style={{ padding: 20, alignItems: 'center' }}>
                         <ActivityIndicator size="small" color="#E3350D" />
-                        <Text style={{ marginTop: 8, color: '#64748B' }}>Checking Mega Evolutions...</Text>
+                        <Text style={{ marginTop: 8, color: '#64748B' }}>Loading Alternate Forms & Megas...</Text>
                       </View>
-                    ) : megaVarieties.length === 0 ? (
+                    ) : allVarieties.length === 0 ? (
                       <View style={styles.noMegaBox}>
-                        <Text style={styles.noMegaTitle}>No Mega Evolution</Text>
+                        <Text style={styles.noMegaTitle}>No Alternate Forms</Text>
                         <Text style={styles.noMegaDesc}>
-                          {capitalize(selectedPokemon.name)} does not have a Mega Evolution form.
+                          {capitalize(selectedPokemon.name)} has only its standard form.
                         </Text>
                       </View>
                     ) : (
-                      megaVarieties.map((mega) => {
-                        const megaArt =
-                          mega.sprites?.other?.['official-artwork']?.front_default ||
-                          mega.sprites?.front_default;
+                      allVarieties.map((form) => {
+                        const formArt =
+                          form.sprites?.other?.['official-artwork']?.front_default ||
+                          form.sprites?.front_default;
                         
                         return (
-                          <View key={mega.name} style={styles.megaCard}>
-                            <Text style={styles.megaFormTitle}>{capitalize(mega.name)}</Text>
+                          <View key={form.name} style={styles.megaCard}>
+                            <Text style={styles.megaFormTitle}>{capitalize(form.name)}</Text>
                             
                             <View style={styles.modalTypesRow}>
-                              {mega.types.map((t) => (
+                              {form.types.map((t) => (
                                 <Text
                                   key={t.type.name}
                                   style={[
@@ -724,24 +724,24 @@ export default function App() {
                               ))}
                             </View>
 
-                            {megaArt && (
-                              <Image source={{ uri: megaArt }} style={styles.megaSprite} />
+                            {formArt && (
+                              <Image source={{ uri: formArt }} style={styles.megaSprite} />
                             )}
 
-                            <Text style={[styles.sectionHeader, { marginTop: 10 }]}>Stat Changes (+/-)</Text>
+                            <Text style={[styles.sectionHeader, { marginTop: 10 }]}>Stat Comparison vs Base Form</Text>
                             <View style={styles.statsContainer}>
-                              {mega.stats.map((mStat, idx) => {
+                              {form.stats.map((fStat, idx) => {
                                 const baseStatVal = selectedPokemon.stats[idx]?.base_stat || 0;
-                                const diff = mStat.base_stat - baseStatVal;
+                                const diff = fStat.base_stat - baseStatVal;
                                 const diffColor = diff > 0 ? '#16A34A' : diff < 0 ? '#DC2626' : '#64748B';
 
                                 return (
-                                  <View key={mStat.stat.name} style={styles.statRow}>
+                                  <View key={fStat.stat.name} style={styles.statRow}>
                                     <Text style={styles.statNameLabel}>
-                                      {formatStatName(mStat.stat.name)}
+                                      {formatStatName(fStat.stat.name)}
                                     </Text>
                                     <Text style={styles.statValueLabel}>
-                                      {mStat.base_stat}
+                                      {fStat.base_stat}
                                     </Text>
                                     <Text style={[styles.diffLabel, { color: diffColor }]}>
                                       {diff > 0 ? `+${diff}` : diff === 0 ? '0' : `${diff}`}
