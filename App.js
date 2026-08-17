@@ -18,6 +18,7 @@ import * as Speech from 'expo-speech';
 
 // --- CONFIGURATION & CONSTANTS ---
 const GENERATIONS = [
+  { id: 'all', name: 'All Gens', region: 'National', offset: 0, limit: 1025 },
   { id: 1, name: 'Gen 1', region: 'Kanto', offset: 0, limit: 151 },
   { id: 2, name: 'Gen 2', region: 'Johto', offset: 151, limit: 100 },
   { id: 3, name: 'Gen 3', region: 'Hoenn', offset: 251, limit: 135 },
@@ -78,7 +79,7 @@ const TYPE_CHART = {
 };
 
 const getTypeColor = (type) => TYPE_COLORS[type?.toLowerCase()] || '#94A3B8';
-const capitalize = (str) => (str ? str.charAt(0).toUpperCase() + str.slice(1).replace('-', ' ') : '');
+const capitalize = (str) => (str ? str.charAt(0).toUpperCase() + str.slice(1).replace(/-/g, ' ') : '');
 const formatStatName = (name) => {
   const map = {
     hp: 'HP',
@@ -106,6 +107,10 @@ export default function App() {
   const [modalVisible, setModalVisible] = useState(false);
   const [activeModalTab, setActiveModalTab] = useState('about');
   const [isSpeaking, setIsSpeaking] = useState(false);
+
+  const [abilityDetails, setAbilityDetails] = useState({});
+  const [megaVarieties, setMegaVarieties] = useState([]);
+  const [loadingModalData, setLoadingModalData] = useState(false);
 
   useEffect(() => {
     loadFavorites();
@@ -198,7 +203,6 @@ export default function App() {
       weak: [],
       resistant: [],
       immune: [],
-      normal: [],
     };
 
     const defenderTypes = types.map((t) => t.type.name);
@@ -217,22 +221,17 @@ export default function App() {
         matchups.immune.push({ type: attackType, multiplier });
       } else if (multiplier < 1) {
         matchups.resistant.push({ type: attackType, multiplier });
-      } else {
-        matchups.normal.push({ type: attackType, multiplier });
       }
     });
 
     return matchups;
   };
 
-const speakPokemon = (pokemon) => {
+  const speakPokemon = (pokemon) => {
     if (!pokemon) return;
 
     const name = capitalize(pokemon.name);
-    
-    // Join all types (e.g., "fire and flying" or "grass and poison")
     const typesList = pokemon.types.map((t) => t.type.name).join(' and ');
-    
     const speechText = `${name}. The ${typesList} type Pokémon.`;
 
     setIsSpeaking(true);
@@ -247,10 +246,59 @@ const speakPokemon = (pokemon) => {
     });
   };
 
-  const openPokemonDetail = (pokemon) => {
+  const openPokemonDetail = async (pokemon) => {
     setSelectedPokemon(pokemon);
     setActiveModalTab('about');
     setModalVisible(true);
+    setLoadingModalData(true);
+    setAbilityDetails({});
+    setMegaVarieties([]);
+
+    try {
+      // 1. Fetch ability descriptions
+      const abilityPromises = pokemon.abilities.map(async (ab) => {
+        try {
+          const res = await fetch(ab.ability.url);
+          const data = await res.json();
+          const effectEntry =
+            data.effect_entries.find((e) => e.language.name === 'en')?.short_effect ||
+            data.flavor_text_entries.find((f) => f.language.name === 'en')?.flavor_text ||
+            'No effect description available.';
+          return { name: ab.ability.name, effect: effectEntry };
+        } catch {
+          return { name: ab.ability.name, effect: 'Effect details unavailable.' };
+        }
+      });
+
+      const abilityResults = await Promise.all(abilityPromises);
+      const abilityMap = {};
+      abilityResults.forEach((item) => {
+        abilityMap[item.name] = item.effect;
+      });
+      setAbilityDetails(abilityMap);
+
+      // 2. Fetch Species & Check for Mega Evolutions
+      const speciesRes = await fetch(pokemon.species.url);
+      const speciesData = await speciesRes.json();
+      
+      const megaEntries = speciesData.varieties.filter(
+        (v) => !v.is_default && v.pokemon.name.includes('-mega')
+      );
+
+      if (megaEntries.length > 0) {
+        const megas = await Promise.all(
+          megaEntries.map(async (m) => {
+            const mRes = await fetch(m.pokemon.url);
+            return await mRes.json();
+          })
+        );
+        setMegaVarieties(megas);
+      }
+    } catch (err) {
+      console.log('Error fetching extra modal info:', err);
+    } finally {
+      setLoadingModalData(false);
+    }
   };
 
   const closeModal = () => {
@@ -351,7 +399,7 @@ const speakPokemon = (pokemon) => {
                     isSelected && styles.genPillTextActive,
                   ]}
                 >
-                  {gen.name} ({gen.region})
+                  {gen.name}
                 </Text>
               </TouchableOpacity>
             );
@@ -501,7 +549,24 @@ const speakPokemon = (pokemon) => {
                         activeModalTab === 'about' && styles.tabBtnTextActive,
                       ]}
                     >
-                      Stats & Info
+                      Stats
+                    </Text>
+                  </TouchableOpacity>
+
+                  <TouchableOpacity
+                    style={[
+                      styles.tabBtn,
+                      activeModalTab === 'mega' && styles.tabBtnActive,
+                    ]}
+                    onPress={() => setActiveModalTab('mega')}
+                  >
+                    <Text
+                      style={[
+                        styles.tabBtnText,
+                        activeModalTab === 'mega' && styles.tabBtnTextActive,
+                      ]}
+                    >
+                      Mega {megaVarieties.length > 0 ? `(${megaVarieties.length})` : ''}
                     </Text>
                   </TouchableOpacity>
 
@@ -536,7 +601,7 @@ const speakPokemon = (pokemon) => {
                         activeModalTab === 'moves' && styles.tabBtnTextActive,
                       ]}
                     >
-                      Moves ({selectedPokemon.moves.length})
+                      Moves
                     </Text>
                   </TouchableOpacity>
                 </View>
@@ -566,16 +631,21 @@ const speakPokemon = (pokemon) => {
                       </View>
                     </View>
 
-                    <Text style={styles.sectionHeader}>Abilities</Text>
-                    <View style={styles.abilitiesContainer}>
+                    <Text style={styles.sectionHeader}>Abilities & Effects</Text>
+                    <View style={styles.abilitiesList}>
                       {selectedPokemon.abilities.map((item) => (
-                        <View key={item.ability.name} style={styles.abilityBadge}>
-                          <Text style={styles.abilityText}>
-                            {capitalize(item.ability.name)}
+                        <View key={item.ability.name} style={styles.abilityCard}>
+                          <View style={styles.abilityHeaderRow}>
+                            <Text style={styles.abilityTitle}>
+                              {capitalize(item.ability.name)}
+                            </Text>
+                            {item.is_hidden && (
+                              <Text style={styles.hiddenTagBadge}>Hidden Ability</Text>
+                            )}
+                          </View>
+                          <Text style={styles.abilityDescText}>
+                            {abilityDetails[item.ability.name] || (loadingModalData ? 'Loading ability description...' : 'Passive battle effect.')}
                           </Text>
-                          {item.is_hidden && (
-                            <Text style={styles.hiddenTag}>(Hidden)</Text>
-                          )}
                         </View>
                       ))}
                     </View>
@@ -613,6 +683,77 @@ const speakPokemon = (pokemon) => {
                         );
                       })}
                     </View>
+                  </View>
+                )}
+
+                {activeModalTab === 'mega' && (
+                  <View>
+                    {loadingModalData ? (
+                      <View style={{ padding: 20, alignItems: 'center' }}>
+                        <ActivityIndicator size="small" color="#E3350D" />
+                        <Text style={{ marginTop: 8, color: '#64748B' }}>Checking Mega Evolutions...</Text>
+                      </View>
+                    ) : megaVarieties.length === 0 ? (
+                      <View style={styles.noMegaBox}>
+                        <Text style={styles.noMegaTitle}>No Mega Evolution</Text>
+                        <Text style={styles.noMegaDesc}>
+                          {capitalize(selectedPokemon.name)} does not have a Mega Evolution form.
+                        </Text>
+                      </View>
+                    ) : (
+                      megaVarieties.map((mega) => {
+                        const megaArt =
+                          mega.sprites?.other?.['official-artwork']?.front_default ||
+                          mega.sprites?.front_default;
+                        
+                        return (
+                          <View key={mega.name} style={styles.megaCard}>
+                            <Text style={styles.megaFormTitle}>{capitalize(mega.name)}</Text>
+                            
+                            <View style={styles.modalTypesRow}>
+                              {mega.types.map((t) => (
+                                <Text
+                                  key={t.type.name}
+                                  style={[
+                                    styles.modalTypeBadge,
+                                    { backgroundColor: getTypeColor(t.type.name) },
+                                  ]}
+                                >
+                                  {t.type.name.toUpperCase()}
+                                </Text>
+                              ))}
+                            </View>
+
+                            {megaArt && (
+                              <Image source={{ uri: megaArt }} style={styles.megaSprite} />
+                            )}
+
+                            <Text style={[styles.sectionHeader, { marginTop: 10 }]}>Stat Changes (+/-)</Text>
+                            <View style={styles.statsContainer}>
+                              {mega.stats.map((mStat, idx) => {
+                                const baseStatVal = selectedPokemon.stats[idx]?.base_stat || 0;
+                                const diff = mStat.base_stat - baseStatVal;
+                                const diffColor = diff > 0 ? '#16A34A' : diff < 0 ? '#DC2626' : '#64748B';
+
+                                return (
+                                  <View key={mStat.stat.name} style={styles.statRow}>
+                                    <Text style={styles.statNameLabel}>
+                                      {formatStatName(mStat.stat.name)}
+                                    </Text>
+                                    <Text style={styles.statValueLabel}>
+                                      {mStat.base_stat}
+                                    </Text>
+                                    <Text style={[styles.diffLabel, { color: diffColor }]}>
+                                      {diff > 0 ? `+${diff}` : diff === 0 ? '0' : `${diff}`}
+                                    </Text>
+                                  </View>
+                                );
+                              })}
+                            </View>
+                          </View>
+                        );
+                      })
+                    )}
                   </View>
                 )}
 
@@ -708,7 +849,7 @@ const speakPokemon = (pokemon) => {
                 {activeModalTab === 'moves' && (
                   <View>
                     <Text style={styles.sectionHeader}>
-                      Complete Learned Moveset
+                      Complete Learned Moveset ({selectedPokemon.moves.length})
                     </Text>
                     <View style={styles.movesContainer}>
                       {selectedPokemon.moves.map((m) => {
@@ -982,6 +1123,7 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     gap: 8,
     marginTop: 6,
+    alignSelf: 'center',
   },
   modalTypeBadge: {
     paddingHorizontal: 10,
@@ -1075,32 +1217,41 @@ const styles = StyleSheet.create({
     color: '#1E293B',
     marginBottom: 8,
   },
-  abilitiesContainer: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: 6,
+  abilitiesList: {
+    gap: 8,
     marginBottom: 16,
   },
-  abilityBadge: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: '#F1F5F9',
-    paddingHorizontal: 10,
-    paddingVertical: 6,
-    borderRadius: 8,
+  abilityCard: {
+    backgroundColor: '#F8FAFC',
+    borderRadius: 12,
+    padding: 12,
     borderWidth: 1,
     borderColor: '#E2E8F0',
   },
-  abilityText: {
-    fontSize: 12,
-    fontWeight: '600',
-    color: '#334155',
+  abilityHeaderRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 4,
   },
-  hiddenTag: {
+  abilityTitle: {
+    fontSize: 13,
+    fontWeight: '700',
+    color: '#1E293B',
+  },
+  hiddenTagBadge: {
     fontSize: 10,
+    fontWeight: '700',
     color: '#E11D48',
-    marginLeft: 4,
-    fontWeight: 'bold',
+    backgroundColor: '#FFE4E6',
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    borderRadius: 4,
+  },
+  abilityDescText: {
+    fontSize: 12,
+    color: '#475569',
+    lineHeight: 17,
   },
   statsContainer: {
     backgroundColor: '#F8FAFC',
@@ -1128,6 +1279,11 @@ const styles = StyleSheet.create({
     textAlign: 'right',
     marginRight: 10,
   },
+  diffLabel: {
+    marginLeft: 'auto',
+    fontSize: 12,
+    fontWeight: '800',
+  },
   statBarBackground: {
     flex: 1,
     height: 8,
@@ -1138,6 +1294,47 @@ const styles = StyleSheet.create({
   statBarFill: {
     height: '100%',
     borderRadius: 4,
+  },
+  megaCard: {
+    backgroundColor: '#F8FAFC',
+    borderRadius: 16,
+    padding: 16,
+    borderWidth: 1,
+    borderColor: '#E2E8F0',
+    marginBottom: 16,
+  },
+  megaFormTitle: {
+    fontSize: 18,
+    fontWeight: '800',
+    color: '#0F172A',
+    textAlign: 'center',
+    marginBottom: 6,
+  },
+  megaSprite: {
+    width: 140,
+    height: 140,
+    alignSelf: 'center',
+    marginVertical: 8,
+  },
+  noMegaBox: {
+    backgroundColor: '#F8FAFC',
+    borderRadius: 14,
+    padding: 24,
+    alignItems: 'center',
+    borderWidth: 1,
+    borderColor: '#E2E8F0',
+    marginVertical: 10,
+  },
+  noMegaTitle: {
+    fontSize: 15,
+    fontWeight: '700',
+    color: '#334155',
+  },
+  noMegaDesc: {
+    fontSize: 12,
+    color: '#94A3B8',
+    textAlign: 'center',
+    marginTop: 4,
   },
   typeGrid: {
     flexDirection: 'row',
