@@ -12,6 +12,7 @@ import {
   TouchableOpacity,
   Modal,
   ScrollView,
+  Alert,
 } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as Speech from 'expo-speech';
@@ -114,9 +115,12 @@ export default function App() {
   const [selectedType, setSelectedType] = useState('all');
   const [showFavoritesOnly, setShowFavoritesOnly] = useState(false);
   const [isGlobalShiny, setIsGlobalShiny] = useState(false);
-  const [showTeamModal, setShowTeamModal] = useState(false);
   const [favorites, setFavorites] = useState([]);
-  const [team, setTeam] = useState([]);
+
+  // Multi-Team Management (Up to 20 Teams)
+  const [allTeams, setAllTeams] = useState([{ id: 'team-1', name: 'Team 1', members: [] }]);
+  const [selectedTeamId, setSelectedTeamId] = useState('team-1');
+  const [showTeamModal, setShowTeamModal] = useState(false);
 
   const [pokemonList, setPokemonList] = useState([]);
   const [filteredList, setFilteredList] = useState([]);
@@ -155,11 +159,78 @@ export default function App() {
     try {
       const storedFavs = await AsyncStorage.getItem('@pokedex_favs');
       if (storedFavs) setFavorites(JSON.parse(storedFavs));
-      const storedTeam = await AsyncStorage.getItem('@pokedex_team');
-      if (storedTeam) setTeam(JSON.parse(storedTeam));
+
+      const storedTeams = await AsyncStorage.getItem('@pokedex_multi_teams');
+      if (storedTeams) {
+        const parsed = JSON.parse(storedTeams);
+        if (parsed.length > 0) {
+          setAllTeams(parsed);
+          setSelectedTeamId(parsed[0].id);
+        }
+      }
     } catch (e) {
-      console.log('Error loading storage:', e);
+      console.log('Error loading storage data:', e);
     }
+  };
+
+  const saveTeamsToStorage = async (teams) => {
+    setAllTeams(teams);
+    await AsyncStorage.setItem('@pokedex_multi_teams', JSON.stringify(teams));
+  };
+
+  const createNewTeam = () => {
+    if (allTeams.length >= 20) {
+      Alert.alert('Limit Reached', 'You have reached the maximum limit of 20 teams.');
+      return;
+    }
+    const newId = `team-${Date.now()}`;
+    const newName = `Team ${allTeams.length + 1}`;
+    const updated = [...allTeams, { id: newId, name: newName, members: [] }];
+    saveTeamsToStorage(updated);
+    setSelectedTeamId(newId);
+  };
+
+  const deleteTeam = (teamId) => {
+    if (allTeams.length <= 1) {
+      Alert.alert('Cannot Delete', 'You must maintain at least one active team.');
+      return;
+    }
+    const updated = allTeams.filter((t) => t.id !== teamId);
+    saveTeamsToStorage(updated);
+    if (selectedTeamId === teamId) {
+      setSelectedTeamId(updated[0].id);
+    }
+  };
+
+  const currentActiveTeam = allTeams.find((t) => t.id === selectedTeamId) || allTeams[0];
+
+  const toggleTeamMember = (pokemon) => {
+    const activeTeam = currentActiveTeam;
+    const exists = activeTeam.members.some((m) => m.id === pokemon.id);
+    let newMembers;
+
+    if (exists) {
+      newMembers = activeTeam.members.filter((m) => m.id !== pokemon.id);
+    } else {
+      if (activeTeam.members.length >= 6) {
+        Alert.alert('Team Full', `"${activeTeam.name}" already has 6 Pokémon.`);
+        return;
+      }
+      newMembers = [
+        ...activeTeam.members,
+        {
+          id: pokemon.id,
+          name: pokemon.name,
+          types: pokemon.types,
+          sprite: pokemon.sprites?.other?.['official-artwork']?.front_default || pokemon.sprites?.front_default,
+        },
+      ];
+    }
+
+    const updatedTeams = allTeams.map((t) =>
+      t.id === activeTeam.id ? { ...t, members: newMembers } : t
+    );
+    saveTeamsToStorage(updatedTeams);
   };
 
   const toggleFavorite = async (pokemonId) => {
@@ -171,31 +242,6 @@ export default function App() {
       await AsyncStorage.setItem('@pokedex_favs', JSON.stringify(updated));
     } catch (e) {
       console.log('Error saving favorite:', e);
-    }
-  };
-
-  const toggleTeamMember = async (pokemon) => {
-    try {
-      const exists = team.some((t) => t.id === pokemon.id);
-      let updated;
-      if (exists) {
-        updated = team.filter((t) => t.id !== pokemon.id);
-      } else {
-        if (team.length >= 6) {
-          alert('Your battle team already has the maximum of 6 Pokémon.');
-          return;
-        }
-        updated = [...team, {
-          id: pokemon.id,
-          name: pokemon.name,
-          types: pokemon.types,
-          sprite: pokemon.sprites?.other?.['official-artwork']?.front_default || pokemon.sprites?.front_default,
-        }];
-      }
-      setTeam(updated);
-      await AsyncStorage.setItem('@pokedex_team', JSON.stringify(updated));
-    } catch (e) {
-      console.log('Error saving team:', e);
     }
   };
 
@@ -252,23 +298,48 @@ export default function App() {
     filterPokemonData();
   }, [filterPokemonData]);
 
-  const parseEvolutionNode = (node, chain = []) => {
+  // Parse Evolution Chain with detailed Trigger Explanations
+  const getEvolutionTriggerText = (details) => {
+    if (!details || details.length === 0) return 'Base Form';
+    const d = details[0];
+    const trigger = d.trigger?.name;
+
+    if (trigger === 'level-up') {
+      if (d.min_level) return `Level ${d.min_level}`;
+      if (d.min_happiness) return `High Friendship (${d.min_happiness})`;
+      if (d.time_of_day) return `Level up (${capitalize(d.time_of_day)})`;
+      if (d.known_move) return `Learn ${capitalize(d.known_move.name)}`;
+      if (d.held_item) return `Hold ${capitalize(d.held_item.name)}`;
+      if (d.location) return `At ${capitalize(d.location.name)}`;
+      return 'Level Up';
+    }
+    if (trigger === 'use-item') {
+      return `Use ${capitalize(d.item?.name || 'Item')}`;
+    }
+    if (trigger === 'trade') {
+      if (d.held_item) return `Trade holding ${capitalize(d.held_item.name)}`;
+      return 'Trade';
+    }
+    return capitalize(trigger);
+  };
+
+  const parseEvolutionNode = (node, chain = [], incomingTrigger = 'Base Form') => {
     if (!node) return chain;
     const urlParts = node.species.url.split('/').filter(Boolean);
     const speciesId = urlParts[urlParts.length - 1];
-    const minLevel = node.evolution_details[0]?.min_level || null;
-    const triggerItem = node.evolution_details[0]?.item?.name || null;
 
     chain.push({
       id: speciesId,
       name: node.species.name,
-      minLevel,
-      triggerItem,
+      triggerDescription: incomingTrigger,
       imageUrl: `https://raw.githubusercontent.com/PokeAPI/sprites/master/sprites/pokemon/other/official-artwork/${speciesId}.png`,
     });
 
     if (node.evolves_to && node.evolves_to.length > 0) {
-      node.evolves_to.forEach((nextStage) => parseEvolutionNode(nextStage, chain));
+      node.evolves_to.forEach((nextStage) => {
+        const nextTrigger = getEvolutionTriggerText(nextStage.evolution_details);
+        parseEvolutionNode(nextStage, chain, nextTrigger);
+      });
     }
     return chain;
   };
@@ -406,15 +477,14 @@ export default function App() {
     const statusMultiplier = STATUS_BONUSES[selectedStatus] || 1;
     const hpFactor = (3 * 100 - 2 * calcHpPercent) / (3 * 100);
     const a = Math.min(255, Math.floor(baseCaptureRate * ballMultiplier * hpFactor * statusMultiplier));
-    const captureChance = Math.min(100, Math.max(1, Math.round((a / 255) * 100)));
-    return captureChance;
+    return Math.min(100, Math.max(1, Math.round((a / 255) * 100)));
   };
 
   const calculateActualStat = (statName, baseStat) => {
     const iv = 31;
     const ev = 85;
     if (statName === 'hp') {
-      if (baseStat === 1) return 1; // Shedinja
+      if (baseStat === 1) return 1;
       return Math.floor(((2 * baseStat + iv + Math.floor(ev / 4)) * calcLevel) / 100) + calcLevel + 10;
     }
     const rawStat = Math.floor(((2 * baseStat + iv + Math.floor(ev / 4)) * calcLevel) / 100) + 5;
@@ -428,7 +498,7 @@ export default function App() {
     const mainType = item.types[0]?.type?.name;
     const themeColor = getTypeColor(mainType);
     const isFav = favorites.includes(item.id);
-    const isInTeam = team.some((t) => t.id === item.id);
+    const isInTeam = currentActiveTeam.members.some((t) => t.id === item.id);
     const artworkUrl = isGlobalShiny
       ? (item.sprites?.other?.['official-artwork']?.front_shiny || item.sprites?.front_shiny)
       : (item.sprites?.other?.['official-artwork']?.front_default || item.sprites?.front_default);
@@ -479,10 +549,10 @@ export default function App() {
         <Text style={styles.appTitle}>Pokédex</Text>
         <View style={{ flexDirection: 'row', gap: 6 }}>
           <TouchableOpacity
-            style={[styles.favHeaderBtn, team.length > 0 && styles.teamActiveBtn]}
+            style={[styles.favHeaderBtn, styles.teamActiveBtn]}
             onPress={() => setShowTeamModal(true)}
           >
-            <Text style={styles.favHeaderBtnText}>⚔️ Team ({team.length}/6)</Text>
+            <Text style={styles.favHeaderBtnText}>⚔️ Teams ({allTeams.length}/20)</Text>
           </TouchableOpacity>
 
           <TouchableOpacity
@@ -584,7 +654,9 @@ export default function App() {
 
                     <TouchableOpacity onPress={() => toggleTeamMember(selectedPokemon)} style={styles.modalFavBtn}>
                       <Text style={styles.modalFavBtnText}>
-                        {team.some((t) => t.id === selectedPokemon.id) ? '⚔️ In Team' : '➕ Add Team'}
+                        {currentActiveTeam.members.some((t) => t.id === selectedPokemon.id)
+                          ? `⚔️ In ${currentActiveTeam.name}`
+                          : `➕ Add to ${currentActiveTeam.name}`}
                       </Text>
                     </TouchableOpacity>
 
@@ -617,7 +689,6 @@ export default function App() {
                   </View>
                 </View>
 
-                {/* Animated / High Res Sprite */}
                 <Image
                   source={{
                     uri: modalShiny
@@ -631,7 +702,6 @@ export default function App() {
                   style={styles.modalSprite}
                 />
 
-                {/* Audio Cry and Speech Row */}
                 <View style={{ flexDirection: 'row', justifyContent: 'center', gap: 10, marginBottom: 14 }}>
                   <TouchableOpacity
                     style={[styles.voiceButton, { backgroundColor: getTypeColor(selectedPokemon.types[0]?.type?.name) }]}
@@ -648,7 +718,6 @@ export default function App() {
                   </TouchableOpacity>
                 </View>
 
-                {/* Tabs */}
                 <View style={styles.tabContainer}>
                   {['about', 'evolutions', 'forms', 'calc', 'matchups', 'moves'].map((tab) => (
                     <TouchableOpacity
@@ -718,21 +787,25 @@ export default function App() {
 
                 {activeModalTab === 'evolutions' && (
                   <View>
-                    <Text style={styles.sectionHeader}>Evolutionary Chain</Text>
+                    <Text style={styles.sectionHeader}>Evolutionary Path & Conditions</Text>
                     {evolutionChain.length === 0 ? (
                       <Text style={styles.neutralText}>No evolution data found.</Text>
                     ) : (
-                      <View style={styles.evoChainRow}>
+                      <View style={styles.evoChainWrapper}>
                         {evolutionChain.map((stage, idx) => (
-                          <React.Fragment key={stage.id}>
-                            <View style={styles.evoNode}>
-                              <Image source={{ uri: stage.imageUrl }} style={styles.evoSprite} />
-                              <Text style={styles.evoName}>{capitalize(stage.name)}</Text>
-                              {stage.minLevel && <Text style={styles.evoRequirement}>Lvl {stage.minLevel}</Text>}
-                              {stage.triggerItem && <Text style={styles.evoRequirement}>{capitalize(stage.triggerItem)}</Text>}
+                          <View key={`${stage.id}-${idx}`} style={styles.evoDetailItem}>
+                            {idx > 0 && (
+                              <View style={styles.evoRequirementBox}>
+                                <Text style={styles.evoArrowText}>➔</Text>
+                                <Text style={styles.evoRequirementBadge}>{stage.triggerDescription}</Text>
+                              </View>
+                            )}
+                            <View style={styles.evoNodeCard}>
+                              <Image source={{ uri: stage.imageUrl }} style={styles.evoSpriteLarge} />
+                              <Text style={styles.evoNodeName}>{capitalize(stage.name)}</Text>
+                              <Text style={styles.evoNodeId}>#{String(stage.id).padStart(4, '0')}</Text>
                             </View>
-                            {idx < evolutionChain.length - 1 && <Text style={styles.evoArrow}>➔</Text>}
-                          </React.Fragment>
+                          </View>
                         ))}
                       </View>
                     )}
@@ -786,11 +859,10 @@ export default function App() {
 
                 {activeModalTab === 'calc' && (
                   <View>
-                    {/* Capture Calculator */}
                     <Text style={styles.sectionHeader}>🎯 Catch Probability Calculator</Text>
                     <View style={styles.calcCard}>
                       <Text style={styles.calcTitle}>Calculated Catch Rate: <Text style={{ color: '#E11D48', fontWeight: '900' }}>{calculateCaptureRate()}%</Text></Text>
-                      <Text style={styles.dimensionLabel}>Target Pokémon Remaining HP: {calcHpPercent}%</Text>
+                      <Text style={styles.dimensionLabel}>Target HP Percentage: {calcHpPercent}%</Text>
                       <View style={{ flexDirection: 'row', gap: 6, marginVertical: 6 }}>
                         {[100, 50, 20, 1].map((hp) => (
                           <TouchableOpacity
@@ -830,7 +902,6 @@ export default function App() {
                       </View>
                     </View>
 
-                    {/* Stat Customizer */}
                     <Text style={[styles.sectionHeader, { marginTop: 14 }]}>📊 Battle Stat Calculator</Text>
                     <View style={styles.calcCard}>
                       <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
@@ -938,27 +1009,62 @@ export default function App() {
         </View>
       </Modal>
 
-      {/* --- TEAM BUILDER & COVERAGE MODAL --- */}
+      {/* --- 20 MULTI-TEAM BUILDER MODAL --- */}
       <Modal animationType="slide" transparent={true} visible={showTeamModal} onRequestClose={() => setShowTeamModal(false)}>
         <View style={styles.modalOverlay}>
           <View style={styles.modalContent}>
             <View style={styles.modalControlBar}>
-              <Text style={styles.modalTitle}>Battle Team ({team.length}/6)</Text>
+              <Text style={styles.modalTitle}>Team Manager ({allTeams.length}/20)</Text>
               <TouchableOpacity style={styles.closeBtn} onPress={() => setShowTeamModal(false)}>
                 <Text style={styles.closeBtnText}>✕</Text>
               </TouchableOpacity>
             </View>
 
+            {/* Team Switcher Tabs & New Team Button */}
+            <View style={{ marginVertical: 8 }}>
+              <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 8 }}>
+                {allTeams.map((teamItem) => {
+                  const isCurrent = teamItem.id === selectedTeamId;
+                  return (
+                    <TouchableOpacity
+                      key={teamItem.id}
+                      style={[styles.teamTabPill, isCurrent && styles.teamTabPillActive]}
+                      onPress={() => setSelectedTeamId(teamItem.id)}
+                    >
+                      <Text style={[styles.teamTabPillText, isCurrent && styles.teamTabPillTextActive]}>
+                        {teamItem.name} ({teamItem.members.length}/6)
+                      </Text>
+                    </TouchableOpacity>
+                  );
+                })}
+
+                {allTeams.length < 20 && (
+                  <TouchableOpacity style={styles.newTeamBtn} onPress={createNewTeam}>
+                    <Text style={styles.newTeamBtnText}>➕ New Team</Text>
+                  </TouchableOpacity>
+                )}
+              </ScrollView>
+            </View>
+
             <ScrollView showsVerticalScrollIndicator={false}>
-              {team.length === 0 ? (
+              <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginVertical: 6 }}>
+                <Text style={styles.sectionHeader}>{currentActiveTeam.name} Roster</Text>
+                {allTeams.length > 1 && (
+                  <TouchableOpacity onPress={() => deleteTeam(currentActiveTeam.id)}>
+                    <Text style={{ color: '#E11D48', fontWeight: 'bold', fontSize: 12 }}>Delete This Team 🗑️</Text>
+                  </TouchableOpacity>
+                )}
+              </View>
+
+              {currentActiveTeam.members.length === 0 ? (
                 <View style={styles.noMegaBox}>
-                  <Text style={styles.noMegaTitle}>No Pokémon in Team</Text>
-                  <Text style={styles.noMegaDesc}>Tap ⚔️ on any Pokémon card or detail view to assemble a team of 6.</Text>
+                  <Text style={styles.noMegaTitle}>This Team is Empty</Text>
+                  <Text style={styles.noMegaDesc}>Tap ➕ on any Pokémon card or detail screen to add up to 6 members.</Text>
                 </View>
               ) : (
                 <View>
-                  <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginVertical: 10 }}>
-                    {team.map((member) => (
+                  <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginVertical: 8 }}>
+                    {currentActiveTeam.members.map((member) => (
                       <View key={member.id} style={styles.teamMemberCard}>
                         <Image source={{ uri: member.sprite }} style={{ width: 60, height: 60 }} />
                         <Text style={styles.pokeName}>{capitalize(member.name)}</Text>
@@ -969,11 +1075,11 @@ export default function App() {
                     ))}
                   </View>
 
-                  <Text style={styles.sectionHeader}>Team Shared Weaknesses</Text>
+                  <Text style={[styles.sectionHeader, { marginTop: 12 }]}>{currentActiveTeam.name} Shared Weaknesses</Text>
                   <View style={styles.calcCard}>
                     {(() => {
                       const weaknessCounts = {};
-                      team.forEach((member) => {
+                      currentActiveTeam.members.forEach((member) => {
                         const matchups = calculateTypeEffectiveness(member.types);
                         matchups.weak.forEach((w) => {
                           weaknessCounts[w.type] = (weaknessCounts[w.type] || 0) + 1;
@@ -981,6 +1087,10 @@ export default function App() {
                       });
 
                       const sortedWeaknesses = Object.entries(weaknessCounts).sort((a, b) => b[1] - a[1]);
+
+                      if (sortedWeaknesses.length === 0) {
+                        return <Text style={styles.neutralText}>No critical weaknesses identified.</Text>;
+                      }
 
                       return (
                         <View style={styles.typeGrid}>
@@ -1077,12 +1187,15 @@ const styles = StyleSheet.create({
   diffLabel: { marginLeft: 'auto', fontSize: 12, fontWeight: '800' },
   statBarBackground: { flex: 1, height: 8, backgroundColor: '#E2E8F0', borderRadius: 4, overflow: 'hidden' },
   statBarFill: { height: '100%', borderRadius: 4 },
-  evoChainRow: { flexDirection: 'row', justifyContent: 'space-around', alignItems: 'center', paddingVertical: 12, backgroundColor: '#F8FAFC', borderRadius: 14, borderWidth: 1, borderColor: '#E2E8F0', marginBottom: 16 },
-  evoNode: { alignItems: 'center', width: 80 },
-  evoSprite: { width: 60, height: 60 },
-  evoName: { fontSize: 11, fontWeight: 'bold', color: '#1E293B', marginTop: 2 },
-  evoRequirement: { fontSize: 9, color: '#0284C7', fontWeight: '700' },
-  evoArrow: { fontSize: 16, color: '#94A3B8', fontWeight: 'bold' },
+  evoChainWrapper: { backgroundColor: '#F8FAFC', borderRadius: 16, padding: 12, borderWidth: 1, borderColor: '#E2E8F0', marginBottom: 16 },
+  evoDetailItem: { alignItems: 'center', marginVertical: 4 },
+  evoRequirementBox: { alignItems: 'center', marginVertical: 6 },
+  evoArrowText: { fontSize: 16, color: '#94A3B8', fontWeight: 'bold' },
+  evoRequirementBadge: { backgroundColor: '#E0F2FE', color: '#0284C7', fontSize: 11, fontWeight: '700', paddingHorizontal: 10, paddingVertical: 4, borderRadius: 8, marginTop: 2 },
+  evoNodeCard: { alignItems: 'center', backgroundColor: '#FFF', padding: 10, borderRadius: 12, borderWidth: 1, borderColor: '#E2E8F0', width: 140 },
+  evoSpriteLarge: { width: 75, height: 75 },
+  evoNodeName: { fontSize: 13, fontWeight: 'bold', color: '#1E293B', marginTop: 4 },
+  evoNodeId: { fontSize: 10, color: '#94A3B8', fontWeight: '600' },
   megaCard: { backgroundColor: '#F8FAFC', borderRadius: 16, padding: 16, borderWidth: 1, borderColor: '#E2E8F0', marginBottom: 16 },
   megaFormTitle: { fontSize: 18, fontWeight: '800', color: '#0F172A', textAlign: 'center', marginBottom: 6 },
   megaSprite: { width: 120, height: 120, alignSelf: 'center', marginVertical: 8 },
@@ -1106,4 +1219,10 @@ const styles = StyleSheet.create({
   smallPillText: { fontSize: 11, fontWeight: '600', color: '#475569' },
   smallPillTextActive: { color: '#FFF' },
   teamMemberCard: { backgroundColor: '#FFF', borderRadius: 12, padding: 10, alignItems: 'center', width: 95, borderWidth: 1, borderColor: '#E2E8F0' },
+  teamTabPill: { backgroundColor: '#E2E8F0', paddingHorizontal: 12, paddingVertical: 6, borderRadius: 10 },
+  teamTabPillActive: { backgroundColor: '#0284C7' },
+  teamTabPillText: { fontSize: 12, fontWeight: 'bold', color: '#475569' },
+  teamTabPillTextActive: { color: '#FFF' },
+  newTeamBtn: { backgroundColor: '#DCFCE7', borderColor: '#86EFAC', borderWidth: 1, paddingHorizontal: 10, paddingVertical: 6, borderRadius: 10 },
+  newTeamBtnText: { fontSize: 12, fontWeight: 'bold', color: '#16A34A' },
 });
