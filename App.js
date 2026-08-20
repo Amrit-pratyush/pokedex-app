@@ -957,24 +957,46 @@ export default function App() {
                       return (
                         <View>
                           <Text style={styles.sectionHeader}>⚠️ Weak Against (Takes 2x - 4x Damage)</Text>
-                          <View style={styles.typeGrid}>
-                            {matchups.weak.map((m) => (
-                              <View key={m.type} style={[styles.matchupBadge, { backgroundColor: getTypeColor(m.type) }]}>
-                                <Text style={styles.matchupBadgeText}>{m.type.toUpperCase()}</Text>
-                                <Text style={styles.multiplierTag}>{m.multiplier}x</Text>
-                              </View>
-                            ))}
-                          </View>
+                          {matchups.weak.length === 0 ? (
+                            <Text style={styles.neutralText}>None</Text>
+                          ) : (
+                            <View style={styles.typeGrid}>
+                              {matchups.weak.map((m) => (
+                                <View key={m.type} style={[styles.matchupBadge, { backgroundColor: getTypeColor(m.type) }]}>
+                                  <Text style={styles.matchupBadgeText}>{m.type.toUpperCase()}</Text>
+                                  <Text style={styles.multiplierTag}>{m.multiplier}x</Text>
+                                </View>
+                              ))}
+                            </View>
+                          )}
 
                           <Text style={[styles.sectionHeader, { marginTop: 14 }]}>🛡️ Resistant To (Takes 0.5x - 0.25x Damage)</Text>
-                          <View style={styles.typeGrid}>
-                            {matchups.resistant.map((m) => (
-                              <View key={m.type} style={[styles.matchupBadge, { backgroundColor: getTypeColor(m.type) }]}>
-                                <Text style={styles.matchupBadgeText}>{m.type.toUpperCase()}</Text>
-                                <Text style={styles.multiplierTag}>{m.multiplier}x</Text>
-                              </View>
-                            ))}
-                          </View>
+                          {matchups.resistant.length === 0 ? (
+                            <Text style={styles.neutralText}>None</Text>
+                          ) : (
+                            <View style={styles.typeGrid}>
+                              {matchups.resistant.map((m) => (
+                                <View key={m.type} style={[styles.matchupBadge, { backgroundColor: getTypeColor(m.type) }]}>
+                                  <Text style={styles.matchupBadgeText}>{m.type.toUpperCase()}</Text>
+                                  <Text style={styles.multiplierTag}>{m.multiplier}x</Text>
+                                </View>
+                              ))}
+                            </View>
+                          )}
+
+                          <Text style={[styles.sectionHeader, { marginTop: 14 }]}>⛔ Immune To (Takes 0x Damage)</Text>
+                          {matchups.immune.length === 0 ? (
+                            <Text style={styles.neutralText}>None</Text>
+                          ) : (
+                            <View style={styles.typeGrid}>
+                              {matchups.immune.map((m) => (
+                                <View key={m.type} style={[styles.matchupBadge, { backgroundColor: getTypeColor(m.type) }]}>
+                                  <Text style={styles.matchupBadgeText}>{m.type.toUpperCase()}</Text>
+                                  <Text style={styles.multiplierTag}>0x</Text>
+                                </View>
+                              ))}
+                            </View>
+                          )}
                         </View>
                       );
                     })()}
