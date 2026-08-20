@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import {
   StyleSheet,
   Text,
@@ -140,6 +140,9 @@ export default function App() {
   const [speciesDataState, setSpeciesDataState] = useState(null);
   const [loadingModalData, setLoadingModalData] = useState(false);
 
+  // Sound ref to prevent overlapping audio
+  const soundRef = useRef(null);
+
   // Calculator State
   const [calcLevel, setCalcLevel] = useState(50);
   const [calcNature, setCalcNature] = useState('neutral');
@@ -149,6 +152,11 @@ export default function App() {
 
   useEffect(() => {
     loadStorageData();
+    return () => {
+      if (soundRef.current) {
+        soundRef.current.unloadAsync();
+      }
+    };
   }, []);
 
   useEffect(() => {
@@ -298,7 +306,6 @@ export default function App() {
     filterPokemonData();
   }, [filterPokemonData]);
 
-  // Parse Evolution Chain with detailed Trigger Explanations
   const getEvolutionTriggerText = (details) => {
     if (!details || details.length === 0) return 'Base Form';
     const d = details[0];
@@ -368,8 +375,12 @@ export default function App() {
   const playPokemonCry = async (pokemon) => {
     const cryUrl = pokemon.cries?.latest || `https://play.pokemonshowdown.com/audio/cries/${pokemon.name.toLowerCase().replace(/-/g, '')}.mp3`;
     try {
+      if (soundRef.current) {
+        await soundRef.current.unloadAsync();
+      }
       setIsPlayingCry(true);
       const { sound } = await Audio.Sound.createAsync({ uri: cryUrl });
+      soundRef.current = sound;
       await sound.playAsync();
       sound.setOnPlaybackStatusUpdate((status) => {
         if (status.didJustFinish) {
@@ -466,6 +477,10 @@ export default function App() {
   const closeModal = () => {
     Speech.stop();
     setIsSpeaking(false);
+    if (soundRef.current) {
+      soundRef.current.unloadAsync();
+    }
+    setIsPlayingCry(false);
     setModalVisible(false);
     setSelectedPokemon(null);
   };
@@ -689,14 +704,13 @@ export default function App() {
                   </View>
                 </View>
 
+                {/* Crisp High-Definition Official Artwork */}
                 <Image
                   source={{
                     uri: modalShiny
-                      ? (selectedPokemon.sprites?.other?.showdown?.front_shiny ||
-                         selectedPokemon.sprites?.other?.['official-artwork']?.front_shiny ||
+                      ? (selectedPokemon.sprites?.other?.['official-artwork']?.front_shiny ||
                          selectedPokemon.sprites?.front_shiny)
-                      : (selectedPokemon.sprites?.other?.showdown?.front_default ||
-                         selectedPokemon.sprites?.other?.['official-artwork']?.front_default ||
+                      : (selectedPokemon.sprites?.other?.['official-artwork']?.front_default ||
                          selectedPokemon.sprites?.front_default),
                   }}
                   style={styles.modalSprite}
@@ -1182,7 +1196,7 @@ const styles = StyleSheet.create({
   modalTitle: { fontSize: 24, fontWeight: '800', color: '#0F172A', marginTop: 2 },
   modalTypesRow: { flexDirection: 'row', gap: 8, marginTop: 6, alignSelf: 'center' },
   modalTypeBadge: { paddingHorizontal: 10, paddingVertical: 4, borderRadius: 8, fontSize: 11, fontWeight: 'bold', color: '#FFF' },
-  modalSprite: { width: 140, height: 140, alignSelf: 'center', marginVertical: 6, resizeMode: 'contain' },
+  modalSprite: { width: 150, height: 150, alignSelf: 'center', marginVertical: 6, resizeMode: 'contain' },
   voiceButton: { paddingHorizontal: 14, paddingVertical: 8, borderRadius: 20, elevation: 2 },
   voiceButtonText: { color: '#FFF', fontSize: 12, fontWeight: 'bold' },
   tabContainer: { flexDirection: 'row', backgroundColor: '#F1F5F9', borderRadius: 12, padding: 4, marginBottom: 16 },
