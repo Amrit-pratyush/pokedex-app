@@ -110,6 +110,12 @@ const formatStatName = (name) => {
   return map[name] || name?.toUpperCase();
 };
 
+const DAMAGE_CLASS_ICONS = {
+  physical: '💥',
+  special: '🔮',
+  status: '🛡️',
+};
+
 export default function App() {
   const [selectedGen, setSelectedGen] = useState(1);
   const [selectedType, setSelectedType] = useState('all');
@@ -135,12 +141,12 @@ export default function App() {
   const [isPlayingCry, setIsPlayingCry] = useState(false);
 
   const [abilityDetails, setAbilityDetails] = useState({});
+  const [moveDetails, setMoveDetails] = useState({});
   const [allVarieties, setAllVarieties] = useState([]);
   const [evolutionChain, setEvolutionChain] = useState([]);
   const [speciesDataState, setSpeciesDataState] = useState(null);
   const [loadingModalData, setLoadingModalData] = useState(false);
 
-  // Sound ref to prevent overlapping audio
   const soundRef = useRef(null);
 
   // Calculator State
@@ -153,9 +159,7 @@ export default function App() {
   useEffect(() => {
     loadStorageData();
     return () => {
-      if (soundRef.current) {
-        soundRef.current.unloadAsync();
-      }
+      if (soundRef.current) soundRef.current.unloadAsync();
     };
   }, []);
 
@@ -320,9 +324,7 @@ export default function App() {
       if (d.location) return `At ${capitalize(d.location.name)}`;
       return 'Level Up';
     }
-    if (trigger === 'use-item') {
-      return `Use ${capitalize(d.item?.name || 'Item')}`;
-    }
+    if (trigger === 'use-item') return `Use ${capitalize(d.item?.name || 'Item')}`;
     if (trigger === 'trade') {
       if (d.held_item) return `Trade holding ${capitalize(d.held_item.name)}`;
       return 'Trade';
@@ -354,7 +356,7 @@ export default function App() {
   const calculateTypeEffectiveness = (types) => {
     const attackingTypes = Object.keys(TYPE_CHART);
     const matchups = { weak: [], resistant: [], immune: [] };
-    const defenderTypes = types.map((t) => t.type.name);
+    const defenderTypes = types.map((t) => t.type?.name || t);
 
     attackingTypes.forEach((attackType) => {
       let multiplier = 1.0;
@@ -375,9 +377,7 @@ export default function App() {
   const playPokemonCry = async (pokemon) => {
     const cryUrl = pokemon.cries?.latest || `https://play.pokemonshowdown.com/audio/cries/${pokemon.name.toLowerCase().replace(/-/g, '')}.mp3`;
     try {
-      if (soundRef.current) {
-        await soundRef.current.unloadAsync();
-      }
+      if (soundRef.current) await soundRef.current.unloadAsync();
       setIsPlayingCry(true);
       const { sound } = await Audio.Sound.createAsync({ uri: cryUrl });
       soundRef.current = sound;
@@ -417,11 +417,13 @@ export default function App() {
     setModalVisible(true);
     setLoadingModalData(true);
     setAbilityDetails({});
+    setMoveDetails({});
     setAllVarieties([]);
     setEvolutionChain([]);
     setSpeciesDataState(null);
 
     try {
+      // 1. Fetch abilities
       const abilityPromises = pokemon.abilities.map(async (ab) => {
         try {
           const res = await fetch(ab.ability.url);
@@ -443,6 +445,30 @@ export default function App() {
       });
       setAbilityDetails(abilityMap);
 
+      // 2. Fetch move type and power
+      const movePromises = pokemon.moves.slice(0, 35).map(async (m) => {
+        try {
+          const res = await fetch(m.move.url);
+          const data = await res.json();
+          return {
+            name: m.move.name,
+            power: data.power,
+            type: data.type?.name,
+            damageClass: data.damage_class?.name,
+          };
+        } catch {
+          return { name: m.move.name, power: null, type: 'normal', damageClass: 'status' };
+        }
+      });
+
+      const moveResults = await Promise.all(movePromises);
+      const moveMap = {};
+      moveResults.forEach((mv) => {
+        moveMap[mv.name] = mv;
+      });
+      setMoveDetails(moveMap);
+
+      // 3. Fetch Species & varieties
       const speciesRes = await fetch(pokemon.species.url);
       const speciesData = await speciesRes.json();
       setSpeciesDataState(speciesData);
@@ -468,7 +494,7 @@ export default function App() {
         setEvolutionChain(chain);
       }
     } catch (err) {
-      console.log('Error modal:', err);
+      console.log('Error loading modal info:', err);
     } finally {
       setLoadingModalData(false);
     }
@@ -477,9 +503,7 @@ export default function App() {
   const closeModal = () => {
     Speech.stop();
     setIsSpeaking(false);
-    if (soundRef.current) {
-      soundRef.current.unloadAsync();
-    }
+    if (soundRef.current) soundRef.current.unloadAsync();
     setIsPlayingCry(false);
     setModalVisible(false);
     setSelectedPokemon(null);
@@ -704,14 +728,12 @@ export default function App() {
                   </View>
                 </View>
 
-                {/* Crisp High-Definition Official Artwork */}
+                {/* Ultra-HD Official Artwork */}
                 <Image
                   source={{
                     uri: modalShiny
-                      ? (selectedPokemon.sprites?.other?.['official-artwork']?.front_shiny ||
-                         selectedPokemon.sprites?.front_shiny)
-                      : (selectedPokemon.sprites?.other?.['official-artwork']?.front_default ||
-                         selectedPokemon.sprites?.front_default),
+                      ? (selectedPokemon.sprites?.other?.['official-artwork']?.front_shiny || selectedPokemon.sprites?.front_shiny)
+                      : (selectedPokemon.sprites?.other?.['official-artwork']?.front_default || selectedPokemon.sprites?.front_default),
                   }}
                   style={styles.modalSprite}
                 />
@@ -836,6 +858,8 @@ export default function App() {
                     ) : (
                       allVarieties.map((form) => {
                         const formArt = form.sprites?.other?.['official-artwork']?.front_default || form.sprites?.front_default;
+                        const formMatchups = calculateTypeEffectiveness(form.types);
+
                         return (
                           <View key={form.name} style={styles.megaCard}>
                             <Text style={styles.megaFormTitle}>{capitalize(form.name)}</Text>
@@ -847,7 +871,54 @@ export default function App() {
                               ))}
                             </View>
                             {formArt && <Image source={{ uri: formArt }} style={styles.megaSprite} />}
-                            <Text style={[styles.sectionHeader, { marginTop: 10 }]}>Stat Comparison vs Base</Text>
+                            
+                            {/* Alternate Form Type Matchups */}
+                            <Text style={[styles.sectionHeader, { marginTop: 12 }]}>Form Type Effectiveness</Text>
+                            <View style={styles.formMatchupSection}>
+                              {formMatchups.weak.length > 0 && (
+                                <View style={{ marginBottom: 6 }}>
+                                  <Text style={styles.subMatchupLabel}>⚠️ Weak (2x–4x):</Text>
+                                  <View style={styles.typeGrid}>
+                                    {formMatchups.weak.map((m) => (
+                                      <View key={m.type} style={[styles.matchupBadge, { backgroundColor: getTypeColor(m.type) }]}>
+                                        <Text style={styles.matchupBadgeText}>{m.type.toUpperCase()}</Text>
+                                        <Text style={styles.multiplierTag}>{m.multiplier}x</Text>
+                                      </View>
+                                    ))}
+                                  </View>
+                                </View>
+                              )}
+
+                              {formMatchups.resistant.length > 0 && (
+                                <View style={{ marginBottom: 6 }}>
+                                  <Text style={styles.subMatchupLabel}>🛡️ Resistant (0.5x–0.25x):</Text>
+                                  <View style={styles.typeGrid}>
+                                    {formMatchups.resistant.map((m) => (
+                                      <View key={m.type} style={[styles.matchupBadge, { backgroundColor: getTypeColor(m.type) }]}>
+                                        <Text style={styles.matchupBadgeText}>{m.type.toUpperCase()}</Text>
+                                        <Text style={styles.multiplierTag}>{m.multiplier}x</Text>
+                                      </View>
+                                    ))}
+                                  </View>
+                                </View>
+                              )}
+
+                              {formMatchups.immune.length > 0 && (
+                                <View>
+                                  <Text style={styles.subMatchupLabel}>⛔ Immune (0x):</Text>
+                                  <View style={styles.typeGrid}>
+                                    {formMatchups.immune.map((m) => (
+                                      <View key={m.type} style={[styles.matchupBadge, { backgroundColor: getTypeColor(m.type) }]}>
+                                        <Text style={styles.matchupBadgeText}>{m.type.toUpperCase()}</Text>
+                                        <Text style={styles.multiplierTag}>0x</Text>
+                                      </View>
+                                    ))}
+                                  </View>
+                                </View>
+                              )}
+                            </View>
+
+                            <Text style={[styles.sectionHeader, { marginTop: 12 }]}>Stat Comparison vs Base</Text>
                             <View style={styles.statsContainer}>
                               {form.stats.map((fStat, idx) => {
                                 const baseStatVal = selectedPokemon.stats[idx]?.base_stat || 0;
@@ -1024,15 +1095,29 @@ export default function App() {
                       {selectedPokemon.moves.map((m) => {
                         const learnDetail = m.version_group_details[0]?.move_learn_method?.name || 'level-up';
                         const level = m.version_group_details[0]?.level_learned_at;
+                        const mvInfo = moveDetails[m.move.name];
+                        const moveType = mvInfo?.type || 'normal';
+                        const powerText = mvInfo?.power ? `${mvInfo.power} PWR` : (mvInfo?.damageClass === 'status' ? 'Status' : '—');
+                        const categoryIcon = DAMAGE_CLASS_ICONS[mvInfo?.damageClass] || '💥';
+
                         return (
                           <View key={m.move.name} style={styles.moveRow}>
-                            <View>
-                              <Text style={styles.moveName}>{capitalize(m.move.name)}</Text>
+                            <View style={{ flex: 1 }}>
+                              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                                <Text style={styles.moveName}>{capitalize(m.move.name)}</Text>
+                                <Text style={[styles.moveTypeBadge, { backgroundColor: getTypeColor(moveType) }]}>
+                                  {moveType.toUpperCase()}
+                                </Text>
+                              </View>
                               <Text style={styles.moveLearnMethod}>
                                 {learnDetail === 'level-up' ? `Level ${level}` : capitalize(learnDetail)}
                               </Text>
                             </View>
-                            <Text style={styles.moveLearnTag}>{learnDetail.toUpperCase()}</Text>
+
+                            <View style={{ alignItems: 'flex-end', gap: 4 }}>
+                              <Text style={styles.movePowerText}>{categoryIcon} {powerText}</Text>
+                              <Text style={styles.moveLearnTag}>{learnDetail.toUpperCase()}</Text>
+                            </View>
                           </View>
                         );
                       })}
@@ -1056,7 +1141,7 @@ export default function App() {
               </TouchableOpacity>
             </View>
 
-            {/* Team Switcher Tabs & New Team Button */}
+            {/* Team Switcher Tabs */}
             <View style={{ marginVertical: 8 }}>
               <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 8 }}>
                 {allTeams.map((teamItem) => {
@@ -1235,6 +1320,8 @@ const styles = StyleSheet.create({
   megaCard: { backgroundColor: '#F8FAFC', borderRadius: 16, padding: 16, borderWidth: 1, borderColor: '#E2E8F0', marginBottom: 16 },
   megaFormTitle: { fontSize: 18, fontWeight: '800', color: '#0F172A', textAlign: 'center', marginBottom: 6 },
   megaSprite: { width: 120, height: 120, alignSelf: 'center', marginVertical: 8 },
+  formMatchupSection: { backgroundColor: '#FFF', borderRadius: 12, padding: 10, borderWidth: 1, borderColor: '#E2E8F0', marginBottom: 10 },
+  subMatchupLabel: { fontSize: 11, fontWeight: '700', color: '#475569', marginBottom: 4 },
   noMegaBox: { backgroundColor: '#F8FAFC', borderRadius: 14, padding: 24, alignItems: 'center', borderWidth: 1, borderColor: '#E2E8F0', marginVertical: 10 },
   noMegaTitle: { fontSize: 15, fontWeight: '700', color: '#334155' },
   noMegaDesc: { fontSize: 12, color: '#94A3B8', textAlign: 'center', marginTop: 4 },
@@ -1246,6 +1333,8 @@ const styles = StyleSheet.create({
   movesContainer: { backgroundColor: '#F8FAFC', borderRadius: 12, padding: 8, borderWidth: 1, borderColor: '#E2E8F0' },
   moveRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingVertical: 8, borderBottomWidth: 1, borderBottomColor: '#E2E8F0' },
   moveName: { fontSize: 13, fontWeight: '700', color: '#1E293B' },
+  moveTypeBadge: { paddingHorizontal: 6, paddingVertical: 2, borderRadius: 4, fontSize: 9, fontWeight: 'bold', color: '#FFF' },
+  movePowerText: { fontSize: 11, fontWeight: '700', color: '#334155' },
   moveLearnMethod: { fontSize: 11, color: '#64748B', marginTop: 2 },
   moveLearnTag: { fontSize: 10, fontWeight: 'bold', color: '#0284C7', backgroundColor: '#E0F2FE', paddingHorizontal: 6, paddingVertical: 2, borderRadius: 4 },
   calcCard: { backgroundColor: '#F8FAFC', borderRadius: 14, padding: 14, borderWidth: 1, borderColor: '#E2E8F0', marginBottom: 14 },
