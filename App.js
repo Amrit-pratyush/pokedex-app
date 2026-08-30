@@ -142,6 +142,7 @@ export default function App() {
 
   const [abilityDetails, setAbilityDetails] = useState({});
   const [moveDetails, setMoveDetails] = useState({});
+  const [expandedMove, setExpandedMove] = useState(null); // Track opened dropdown move
   const [allVarieties, setAllVarieties] = useState([]);
   const [evolutionChain, setEvolutionChain] = useState([]);
   const [speciesDataState, setSpeciesDataState] = useState(null);
@@ -414,6 +415,7 @@ export default function App() {
     setSelectedPokemon(pokemon);
     setActiveModalTab('about');
     setModalShiny(isGlobalShiny);
+    setExpandedMove(null);
     setModalVisible(true);
     setLoadingModalData(true);
     setAbilityDetails({});
@@ -445,19 +447,33 @@ export default function App() {
       });
       setAbilityDetails(abilityMap);
 
-      // 2. Fetch move type and power
-      const movePromises = pokemon.moves.slice(0, 35).map(async (m) => {
+      // 2. Fetch full move details (Power, Accuracy, PP, Attack Type, Description)
+      const movePromises = pokemon.moves.slice(0, 45).map(async (m) => {
         try {
           const res = await fetch(m.move.url);
           const data = await res.json();
+          const desc = data.effect_entries.find((e) => e.language.name === 'en')?.short_effect ||
+                       data.flavor_text_entries.find((f) => f.language.name === 'en')?.flavor_text ||
+                       'Standard combat move.';
           return {
             name: m.move.name,
             power: data.power,
+            accuracy: data.accuracy,
+            pp: data.pp,
             type: data.type?.name,
             damageClass: data.damage_class?.name,
+            description: desc,
           };
         } catch {
-          return { name: m.move.name, power: null, type: 'normal', damageClass: 'status' };
+          return {
+            name: m.move.name,
+            power: null,
+            accuracy: null,
+            pp: 15,
+            type: 'normal',
+            damageClass: 'status',
+            description: 'Standard combat move.',
+          };
         }
       });
 
@@ -507,6 +523,10 @@ export default function App() {
     setIsPlayingCry(false);
     setModalVisible(false);
     setSelectedPokemon(null);
+  };
+
+  const toggleMoveDropdown = (moveName) => {
+    setExpandedMove(expandedMove === moveName ? null : moveName);
   };
 
   const calculateCaptureRate = () => {
@@ -1091,6 +1111,8 @@ export default function App() {
                 {activeModalTab === 'moves' && (
                   <View>
                     <Text style={styles.sectionHeader}>Learned Moveset ({selectedPokemon.moves.length})</Text>
+                    <Text style={styles.moveInstructionHint}>Tap any move to view accuracy, PP, effect, & learning method.</Text>
+                    
                     <View style={styles.movesContainer}>
                       {selectedPokemon.moves.map((m) => {
                         const learnDetail = m.version_group_details[0]?.move_learn_method?.name || 'level-up';
@@ -1099,25 +1121,66 @@ export default function App() {
                         const moveType = mvInfo?.type || 'normal';
                         const powerText = mvInfo?.power ? `${mvInfo.power} PWR` : (mvInfo?.damageClass === 'status' ? 'Status' : '—');
                         const categoryIcon = DAMAGE_CLASS_ICONS[mvInfo?.damageClass] || '💥';
+                        const isExpanded = expandedMove === m.move.name;
 
                         return (
-                          <View key={m.move.name} style={styles.moveRow}>
-                            <View style={{ flex: 1 }}>
-                              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
-                                <Text style={styles.moveName}>{capitalize(m.move.name)}</Text>
-                                <Text style={[styles.moveTypeBadge, { backgroundColor: getTypeColor(moveType) }]}>
-                                  {moveType.toUpperCase()}
+                          <View key={m.move.name} style={styles.moveWrapper}>
+                            <TouchableOpacity
+                              activeOpacity={0.7}
+                              style={styles.moveRow}
+                              onPress={() => toggleMoveDropdown(m.move.name)}
+                            >
+                              <View style={{ flex: 1 }}>
+                                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                                  <Text style={styles.moveName}>{capitalize(m.move.name)}</Text>
+                                  <Text style={[styles.moveTypeBadge, { backgroundColor: getTypeColor(moveType) }]}>
+                                    {moveType.toUpperCase()}
+                                  </Text>
+                                </View>
+                                <Text style={styles.moveLearnMethod}>
+                                  {learnDetail === 'level-up' ? `Learned at Lvl ${level}` : capitalize(learnDetail)}
                                 </Text>
                               </View>
-                              <Text style={styles.moveLearnMethod}>
-                                {learnDetail === 'level-up' ? `Level ${level}` : capitalize(learnDetail)}
-                              </Text>
-                            </View>
 
-                            <View style={{ alignItems: 'flex-end', gap: 4 }}>
-                              <Text style={styles.movePowerText}>{categoryIcon} {powerText}</Text>
-                              <Text style={styles.moveLearnTag}>{learnDetail.toUpperCase()}</Text>
-                            </View>
+                              <View style={{ alignItems: 'flex-end', gap: 4 }}>
+                                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                                  <Text style={styles.movePowerText}>{categoryIcon} {powerText}</Text>
+                                  <Text style={styles.dropdownChevron}>{isExpanded ? '▲' : '▼'}</Text>
+                                </View>
+                                <Text style={styles.moveLearnTag}>{learnDetail.toUpperCase()}</Text>
+                              </View>
+                            </TouchableOpacity>
+
+                            {/* Dropdown Drawer */}
+                            {isExpanded && (
+                              <View style={styles.moveDropdownDrawer}>
+                                <View style={styles.moveDetailMetrics}>
+                                  <View style={styles.moveMetricBox}>
+                                    <Text style={styles.metricTitle}>Attack Type</Text>
+                                    <Text style={styles.metricVal}>
+                                      {categoryIcon} {capitalize(mvInfo?.damageClass || 'Status')}
+                                    </Text>
+                                  </View>
+                                  <View style={styles.moveMetricBox}>
+                                    <Text style={styles.metricTitle}>Base Power</Text>
+                                    <Text style={styles.metricVal}>{mvInfo?.power || '—'}</Text>
+                                  </View>
+                                  <View style={styles.moveMetricBox}>
+                                    <Text style={styles.metricTitle}>Accuracy</Text>
+                                    <Text style={styles.metricVal}>{mvInfo?.accuracy ? `${mvInfo.accuracy}%` : '—'}</Text>
+                                  </View>
+                                  <View style={styles.moveMetricBox}>
+                                    <Text style={styles.metricTitle}>Max PP</Text>
+                                    <Text style={styles.metricVal}>{mvInfo?.pp || '—'}</Text>
+                                  </View>
+                                </View>
+
+                                <Text style={styles.moveDescLabel}>Effect Details:</Text>
+                                <Text style={styles.moveDescText}>
+                                  {mvInfo?.description || 'Inflicts standard battle damage.'}
+                                </Text>
+                              </View>
+                            )}
                           </View>
                         );
                       })}
@@ -1330,13 +1393,23 @@ const styles = StyleSheet.create({
   matchupBadgeText: { fontSize: 10, fontWeight: 'bold', color: '#FFF' },
   multiplierTag: { backgroundColor: 'rgba(0,0,0,0.25)', paddingHorizontal: 4, paddingVertical: 1, borderRadius: 4, fontSize: 9, fontWeight: 'bold', color: '#FFF' },
   neutralText: { fontSize: 12, color: '#94A3B8', fontStyle: 'italic' },
-  movesContainer: { backgroundColor: '#F8FAFC', borderRadius: 12, padding: 8, borderWidth: 1, borderColor: '#E2E8F0' },
-  moveRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingVertical: 8, borderBottomWidth: 1, borderBottomColor: '#E2E8F0' },
+  moveInstructionHint: { fontSize: 11, color: '#64748B', marginBottom: 8 },
+  movesContainer: { backgroundColor: '#F8FAFC', borderRadius: 14, padding: 8, borderWidth: 1, borderColor: '#E2E8F0' },
+  moveWrapper: { borderBottomWidth: 1, borderBottomColor: '#E2E8F0', marginBottom: 4 },
+  moveRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingVertical: 8 },
   moveName: { fontSize: 13, fontWeight: '700', color: '#1E293B' },
   moveTypeBadge: { paddingHorizontal: 6, paddingVertical: 2, borderRadius: 4, fontSize: 9, fontWeight: 'bold', color: '#FFF' },
   movePowerText: { fontSize: 11, fontWeight: '700', color: '#334155' },
+  dropdownChevron: { fontSize: 10, color: '#94A3B8', fontWeight: 'bold', marginLeft: 4 },
   moveLearnMethod: { fontSize: 11, color: '#64748B', marginTop: 2 },
   moveLearnTag: { fontSize: 10, fontWeight: 'bold', color: '#0284C7', backgroundColor: '#E0F2FE', paddingHorizontal: 6, paddingVertical: 2, borderRadius: 4 },
+  moveDropdownDrawer: { backgroundColor: '#FFF', borderRadius: 10, padding: 10, marginVertical: 6, borderWidth: 1, borderColor: '#CBD5E1' },
+  moveDetailMetrics: { flexDirection: 'row', justifyContent: 'space-between', backgroundColor: '#F8FAFC', borderRadius: 8, padding: 8, marginBottom: 8 },
+  moveMetricBox: { alignItems: 'center', flex: 1 },
+  metricTitle: { fontSize: 10, color: '#64748B', fontWeight: '600', marginBottom: 2 },
+  metricVal: { fontSize: 12, fontWeight: '800', color: '#1E293B' },
+  moveDescLabel: { fontSize: 10, fontWeight: '700', color: '#475569', marginBottom: 2 },
+  moveDescText: { fontSize: 11, color: '#334155', lineHeight: 16 },
   calcCard: { backgroundColor: '#F8FAFC', borderRadius: 14, padding: 14, borderWidth: 1, borderColor: '#E2E8F0', marginBottom: 14 },
   calcTitle: { fontSize: 13, fontWeight: '700', color: '#1E293B', marginBottom: 8 },
   smallPill: { paddingHorizontal: 8, paddingVertical: 4, borderRadius: 8, backgroundColor: '#E2E8F0' },
