@@ -118,7 +118,8 @@ const DAMAGE_CLASS_ICONS = {
 
 export default function App() {
   const [selectedGen, setSelectedGen] = useState(1);
-  const [selectedType, setSelectedType] = useState('all');
+  // Multi-type selection array (allows up to 2 types)
+  const [selectedTypes, setSelectedTypes] = useState([]);
   const [showFavoritesOnly, setShowFavoritesOnly] = useState(false);
   const [isGlobalShiny, setIsGlobalShiny] = useState(false);
   const [favorites, setFavorites] = useState([]);
@@ -142,7 +143,8 @@ export default function App() {
 
   const [abilityDetails, setAbilityDetails] = useState({});
   const [moveDetails, setMoveDetails] = useState({});
-  const [expandedMove, setExpandedMove] = useState(null); // Track opened dropdown move
+  const [loadingMoveDetails, setLoadingMoveDetails] = useState({});
+  const [expandedMove, setExpandedMove] = useState(null);
   const [allVarieties, setAllVarieties] = useState([]);
   const [evolutionChain, setEvolutionChain] = useState([]);
   const [speciesDataState, setSpeciesDataState] = useState(null);
@@ -282,6 +284,24 @@ export default function App() {
     }
   };
 
+  // Toggle up to 2 types for dual-type filtering
+  const handleTypeSelect = (type) => {
+    if (type === 'all') {
+      setSelectedTypes([]);
+      return;
+    }
+    if (selectedTypes.includes(type)) {
+      setSelectedTypes(selectedTypes.filter((t) => t !== type));
+    } else {
+      if (selectedTypes.length >= 2) {
+        // Replace oldest selection
+        setSelectedTypes([selectedTypes[1], type]);
+      } else {
+        setSelectedTypes([...selectedTypes, type]);
+      }
+    }
+  };
+
   const filterPokemonData = useCallback(() => {
     let result = [...pokemonList];
 
@@ -294,10 +314,11 @@ export default function App() {
       );
     }
 
-    if (selectedType !== 'all') {
-      result = result.filter((poke) =>
-        poke.types.some((t) => t.type.name === selectedType)
-      );
+    if (selectedTypes.length > 0) {
+      result = result.filter((poke) => {
+        const pokeTypeNames = poke.types.map((t) => t.type.name);
+        return selectedTypes.every((t) => pokeTypeNames.includes(t));
+      });
     }
 
     if (showFavoritesOnly) {
@@ -305,7 +326,7 @@ export default function App() {
     }
 
     setFilteredList(result);
-  }, [pokemonList, searchQuery, selectedType, showFavoritesOnly, favorites]);
+  }, [pokemonList, searchQuery, selectedTypes, showFavoritesOnly, favorites]);
 
   useEffect(() => {
     filterPokemonData();
@@ -411,6 +432,58 @@ export default function App() {
     });
   };
 
+  // On-demand fetch for specific move when user expands accordion
+  const fetchSingleMoveDetails = async (moveName, moveUrl) => {
+    if (moveDetails[moveName] || loadingMoveDetails[moveName]) return;
+
+    setLoadingMoveDetails((prev) => ({ ...prev, [moveName]: true }));
+    try {
+      const res = await fetch(moveUrl);
+      const data = await res.json();
+      const desc =
+        data.effect_entries?.find((e) => e.language.name === 'en')?.short_effect ||
+        data.flavor_text_entries?.find((f) => f.language.name === 'en')?.flavor_text ||
+        'Standard Pokémon battle move.';
+
+      setMoveDetails((prev) => ({
+        ...prev,
+        [moveName]: {
+          name: data.name,
+          power: data.power,
+          accuracy: data.accuracy,
+          pp: data.pp,
+          type: data.type?.name || 'normal',
+          damageClass: data.damage_class?.name || 'status',
+          description: desc,
+        },
+      }));
+    } catch {
+      setMoveDetails((prev) => ({
+        ...prev,
+        [moveName]: {
+          name: moveName,
+          power: null,
+          accuracy: null,
+          pp: null,
+          type: 'normal',
+          damageClass: 'status',
+          description: 'No extra details available.',
+        },
+      }));
+    } finally {
+      setLoadingMoveDetails((prev) => ({ ...prev, [moveName]: false }));
+    }
+  };
+
+  const toggleMoveDropdown = (moveName, moveUrl) => {
+    if (expandedMove === moveName) {
+      setExpandedMove(null);
+    } else {
+      setExpandedMove(moveName);
+      fetchSingleMoveDetails(moveName, moveUrl);
+    }
+  };
+
   const openPokemonDetail = async (pokemon) => {
     setSelectedPokemon(pokemon);
     setActiveModalTab('about');
@@ -419,7 +492,6 @@ export default function App() {
     setModalVisible(true);
     setLoadingModalData(true);
     setAbilityDetails({});
-    setMoveDetails({});
     setAllVarieties([]);
     setEvolutionChain([]);
     setSpeciesDataState(null);
@@ -431,8 +503,8 @@ export default function App() {
           const res = await fetch(ab.ability.url);
           const data = await res.json();
           const effectEntry =
-            data.effect_entries.find((e) => e.language.name === 'en')?.short_effect ||
-            data.flavor_text_entries.find((f) => f.language.name === 'en')?.flavor_text ||
+            data.effect_entries?.find((e) => e.language.name === 'en')?.short_effect ||
+            data.flavor_text_entries?.find((f) => f.language.name === 'en')?.flavor_text ||
             'Passive battle ability.';
           return { name: ab.ability.name, effect: effectEntry };
         } catch {
@@ -447,44 +519,7 @@ export default function App() {
       });
       setAbilityDetails(abilityMap);
 
-      // 2. Fetch full move details (Power, Accuracy, PP, Attack Type, Description)
-      const movePromises = pokemon.moves.slice(0, 45).map(async (m) => {
-        try {
-          const res = await fetch(m.move.url);
-          const data = await res.json();
-          const desc = data.effect_entries.find((e) => e.language.name === 'en')?.short_effect ||
-                       data.flavor_text_entries.find((f) => f.language.name === 'en')?.flavor_text ||
-                       'Standard combat move.';
-          return {
-            name: m.move.name,
-            power: data.power,
-            accuracy: data.accuracy,
-            pp: data.pp,
-            type: data.type?.name,
-            damageClass: data.damage_class?.name,
-            description: desc,
-          };
-        } catch {
-          return {
-            name: m.move.name,
-            power: null,
-            accuracy: null,
-            pp: 15,
-            type: 'normal',
-            damageClass: 'status',
-            description: 'Standard combat move.',
-          };
-        }
-      });
-
-      const moveResults = await Promise.all(movePromises);
-      const moveMap = {};
-      moveResults.forEach((mv) => {
-        moveMap[mv.name] = mv;
-      });
-      setMoveDetails(moveMap);
-
-      // 3. Fetch Species & varieties
+      // 2. Fetch Species & varieties
       const speciesRes = await fetch(pokemon.species.url);
       const speciesData = await speciesRes.json();
       setSpeciesDataState(speciesData);
@@ -523,10 +558,6 @@ export default function App() {
     setIsPlayingCry(false);
     setModalVisible(false);
     setSelectedPokemon(null);
-  };
-
-  const toggleMoveDropdown = (moveName) => {
-    setExpandedMove(expandedMove === moveName ? null : moveName);
   };
 
   const calculateCaptureRate = () => {
@@ -657,18 +688,28 @@ export default function App() {
         </ScrollView>
       </View>
 
+      {/* Dual-Type Filter Bar */}
       <View style={styles.scrollSection}>
         <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.typeScrollContent}>
           {POKEMON_TYPES.map((type) => {
-            const isSelected = selectedType === type;
-            const bg = type === 'all' ? '#334155' : getTypeColor(type);
+            const isAll = type === 'all';
+            const isSelected = isAll ? selectedTypes.length === 0 : selectedTypes.includes(type);
+            const bg = isAll ? '#334155' : getTypeColor(type);
+
             return (
               <TouchableOpacity
                 key={type}
-                style={[styles.typePill, { backgroundColor: bg }, isSelected && styles.typePillActive]}
-                onPress={() => setSelectedType(type)}
+                style={[
+                  styles.typePill,
+                  { backgroundColor: bg },
+                  isSelected && styles.typePillActive,
+                ]}
+                onPress={() => handleTypeSelect(type)}
               >
-                <Text style={styles.typePillText}>{type.toUpperCase()}</Text>
+                <Text style={styles.typePillText}>
+                  {type.toUpperCase()}
+                  {!isAll && isSelected ? ' ✓' : ''}
+                </Text>
               </TouchableOpacity>
             );
           })}
@@ -683,7 +724,7 @@ export default function App() {
       ) : filteredList.length === 0 ? (
         <View style={styles.centerContainer}>
           <Text style={styles.emptyTitle}>No Pokémon Found</Text>
-          <Text style={styles.emptySubtitle}>Try changing your generation or filter.</Text>
+          <Text style={styles.emptySubtitle}>Try adjusting your generation or dual-type filters.</Text>
         </View>
       ) : (
         <FlatList
@@ -892,7 +933,6 @@ export default function App() {
                             </View>
                             {formArt && <Image source={{ uri: formArt }} style={styles.megaSprite} />}
                             
-                            {/* Alternate Form Type Matchups */}
                             <Text style={[styles.sectionHeader, { marginTop: 12 }]}>Form Type Effectiveness</Text>
                             <View style={styles.formMatchupSection}>
                               {formMatchups.weak.length > 0 && (
@@ -1111,31 +1151,31 @@ export default function App() {
                 {activeModalTab === 'moves' && (
                   <View>
                     <Text style={styles.sectionHeader}>Learned Moveset ({selectedPokemon.moves.length})</Text>
-                    <Text style={styles.moveInstructionHint}>Tap any move to view accuracy, PP, effect, & learning method.</Text>
+                    <Text style={styles.moveInstructionHint}>Tap any move to expand real-time accuracy, PP, effect, & power.</Text>
                     
                     <View style={styles.movesContainer}>
                       {selectedPokemon.moves.map((m) => {
                         const learnDetail = m.version_group_details[0]?.move_learn_method?.name || 'level-up';
                         const level = m.version_group_details[0]?.level_learned_at;
                         const mvInfo = moveDetails[m.move.name];
-                        const moveType = mvInfo?.type || 'normal';
-                        const powerText = mvInfo?.power ? `${mvInfo.power} PWR` : (mvInfo?.damageClass === 'status' ? 'Status' : '—');
-                        const categoryIcon = DAMAGE_CLASS_ICONS[mvInfo?.damageClass] || '💥';
                         const isExpanded = expandedMove === m.move.name;
+                        const isMoveLoading = loadingMoveDetails[m.move.name];
 
                         return (
                           <View key={m.move.name} style={styles.moveWrapper}>
                             <TouchableOpacity
                               activeOpacity={0.7}
                               style={styles.moveRow}
-                              onPress={() => toggleMoveDropdown(m.move.name)}
+                              onPress={() => toggleMoveDropdown(m.move.name, m.move.url)}
                             >
                               <View style={{ flex: 1 }}>
                                 <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
                                   <Text style={styles.moveName}>{capitalize(m.move.name)}</Text>
-                                  <Text style={[styles.moveTypeBadge, { backgroundColor: getTypeColor(moveType) }]}>
-                                    {moveType.toUpperCase()}
-                                  </Text>
+                                  {mvInfo?.type && (
+                                    <Text style={[styles.moveTypeBadge, { backgroundColor: getTypeColor(mvInfo.type) }]}>
+                                      {mvInfo.type.toUpperCase()}
+                                    </Text>
+                                  )}
                                 </View>
                                 <Text style={styles.moveLearnMethod}>
                                   {learnDetail === 'level-up' ? `Learned at Lvl ${level}` : capitalize(learnDetail)}
@@ -1144,41 +1184,57 @@ export default function App() {
 
                               <View style={{ alignItems: 'flex-end', gap: 4 }}>
                                 <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
-                                  <Text style={styles.movePowerText}>{categoryIcon} {powerText}</Text>
+                                  {mvInfo ? (
+                                    <Text style={styles.movePowerText}>
+                                      {DAMAGE_CLASS_ICONS[mvInfo.damageClass] || '💥'}{' '}
+                                      {mvInfo.power ? `${mvInfo.power} PWR` : (mvInfo.damageClass === 'status' ? 'Status' : '—')}
+                                    </Text>
+                                  ) : (
+                                    <Text style={styles.movePowerTextPlaceholder}>Tap for Details</Text>
+                                  )}
                                   <Text style={styles.dropdownChevron}>{isExpanded ? '▲' : '▼'}</Text>
                                 </View>
                                 <Text style={styles.moveLearnTag}>{learnDetail.toUpperCase()}</Text>
                               </View>
                             </TouchableOpacity>
 
-                            {/* Dropdown Drawer */}
+                            {/* Accordion Move Details Drawer */}
                             {isExpanded && (
                               <View style={styles.moveDropdownDrawer}>
-                                <View style={styles.moveDetailMetrics}>
-                                  <View style={styles.moveMetricBox}>
-                                    <Text style={styles.metricTitle}>Attack Type</Text>
-                                    <Text style={styles.metricVal}>
-                                      {categoryIcon} {capitalize(mvInfo?.damageClass || 'Status')}
-                                    </Text>
+                                {isMoveLoading ? (
+                                  <View style={{ padding: 12, alignItems: 'center' }}>
+                                    <ActivityIndicator size="small" color="#0284C7" />
+                                    <Text style={{ marginTop: 6, fontSize: 11, color: '#64748B' }}>Fetching move specs...</Text>
                                   </View>
-                                  <View style={styles.moveMetricBox}>
-                                    <Text style={styles.metricTitle}>Base Power</Text>
-                                    <Text style={styles.metricVal}>{mvInfo?.power || '—'}</Text>
-                                  </View>
-                                  <View style={styles.moveMetricBox}>
-                                    <Text style={styles.metricTitle}>Accuracy</Text>
-                                    <Text style={styles.metricVal}>{mvInfo?.accuracy ? `${mvInfo.accuracy}%` : '—'}</Text>
-                                  </View>
-                                  <View style={styles.moveMetricBox}>
-                                    <Text style={styles.metricTitle}>Max PP</Text>
-                                    <Text style={styles.metricVal}>{mvInfo?.pp || '—'}</Text>
-                                  </View>
-                                </View>
+                                ) : mvInfo ? (
+                                  <View>
+                                    <View style={styles.moveDetailMetrics}>
+                                      <View style={styles.moveMetricBox}>
+                                        <Text style={styles.metricTitle}>Attack Type</Text>
+                                        <Text style={styles.metricVal}>
+                                          {DAMAGE_CLASS_ICONS[mvInfo.damageClass] || '💥'} {capitalize(mvInfo.damageClass || 'Status')}
+                                        </Text>
+                                      </View>
+                                      <View style={styles.moveMetricBox}>
+                                        <Text style={styles.metricTitle}>Base Power</Text>
+                                        <Text style={styles.metricVal}>{mvInfo.power || '—'}</Text>
+                                      </View>
+                                      <View style={styles.moveMetricBox}>
+                                        <Text style={styles.metricTitle}>Accuracy</Text>
+                                        <Text style={styles.metricVal}>{mvInfo.accuracy ? `${mvInfo.accuracy}%` : '—'}</Text>
+                                      </View>
+                                      <View style={styles.moveMetricBox}>
+                                        <Text style={styles.metricTitle}>Max PP</Text>
+                                        <Text style={styles.metricVal}>{mvInfo.pp || '—'}</Text>
+                                      </View>
+                                    </View>
 
-                                <Text style={styles.moveDescLabel}>Effect Details:</Text>
-                                <Text style={styles.moveDescText}>
-                                  {mvInfo?.description || 'Inflicts standard battle damage.'}
-                                </Text>
+                                    <Text style={styles.moveDescLabel}>Effect Details:</Text>
+                                    <Text style={styles.moveDescText}>{mvInfo.description}</Text>
+                                  </View>
+                                ) : (
+                                  <Text style={styles.neutralText}>No additional data available.</Text>
+                                )}
                               </View>
                             )}
                           </View>
@@ -1204,7 +1260,6 @@ export default function App() {
               </TouchableOpacity>
             </View>
 
-            {/* Team Switcher Tabs */}
             <View style={{ marginVertical: 8 }}>
               <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 8 }}>
                 {allTeams.map((teamItem) => {
@@ -1315,8 +1370,8 @@ const styles = StyleSheet.create({
   genPillText: { fontSize: 12, fontWeight: '700', color: '#475569' },
   genPillTextActive: { color: '#FFF' },
   typeScrollContent: { paddingHorizontal: 16, gap: 6 },
-  typePill: { paddingHorizontal: 10, paddingVertical: 4, borderRadius: 8, opacity: 0.75 },
-  typePillActive: { opacity: 1, transform: [{ scale: 1.05 }] },
+  typePill: { paddingHorizontal: 10, paddingVertical: 5, borderRadius: 8, opacity: 0.6 },
+  typePillActive: { opacity: 1, transform: [{ scale: 1.05 }], borderWidth: 1.5, borderColor: '#0F172A' },
   typePillText: { fontSize: 10, fontWeight: 'bold', color: '#FFF' },
   listContent: { paddingHorizontal: 10, paddingBottom: 24 },
   gridRow: { justifyContent: 'space-between' },
@@ -1400,6 +1455,7 @@ const styles = StyleSheet.create({
   moveName: { fontSize: 13, fontWeight: '700', color: '#1E293B' },
   moveTypeBadge: { paddingHorizontal: 6, paddingVertical: 2, borderRadius: 4, fontSize: 9, fontWeight: 'bold', color: '#FFF' },
   movePowerText: { fontSize: 11, fontWeight: '700', color: '#334155' },
+  movePowerTextPlaceholder: { fontSize: 10, fontWeight: '600', color: '#0284C7' },
   dropdownChevron: { fontSize: 10, color: '#94A3B8', fontWeight: 'bold', marginLeft: 4 },
   moveLearnMethod: { fontSize: 11, color: '#64748B', marginTop: 2 },
   moveLearnTag: { fontSize: 10, fontWeight: 'bold', color: '#0284C7', backgroundColor: '#E0F2FE', paddingHorizontal: 6, paddingVertical: 2, borderRadius: 4 },
